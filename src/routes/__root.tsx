@@ -6,6 +6,21 @@ import appCss from "../styles.css?url";
 
 const APP_NAME = "Potion";
 
+function Frame() {
+  return (
+    <>
+      <PreviewHostBridge />
+      <AuthProvider>
+        <Outlet />
+      </AuthProvider>
+    </>
+  );
+}
+
+function isDesktopSpa() {
+  return typeof document !== "undefined" && Boolean(document.getElementById("potion-root"));
+}
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -31,19 +46,19 @@ export const Route = createRootRoute({
       },
     ],
   }),
-  component: () => (
-    <html lang="en" className="dark" suppressHydrationWarning>
-      <head>
-        <HeadContent />
-        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
-      </head>
-      <body>
-        <PreviewHostBridge />
-        <AuthProvider>
-          <Outlet />
-        </AuthProvider>
-        <Scripts />
-      </body>
-    </html>
-  ),
+  component: () => {
+    if (isDesktopSpa()) return <Frame />;
+    return (
+      <html lang="en" className="dark" suppressHydrationWarning>
+        <head>
+          <HeadContent />
+          <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+        </head>
+        <body>
+          <Frame />
+          <Scripts />
+        </body>
+      </html>
+    );
+  },
 });

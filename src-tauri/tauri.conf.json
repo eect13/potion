@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Potion",
+  "version": "1.0.0",
+  "identifier": "app.potion.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:8080",
+    "beforeBuildCommand": {
+      "script": "node scripts/tauri-before-build.mjs"
+    },
+    "beforeBundleCommand": {
+      "script": "node scripts/tauri-before-build.mjs bundle"
+    },
+    "frontendDist": "../.vercel/output/static"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Potion",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 390,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https: wss:; font-src 'self' data: blob: asset: http://asset.localhost https://fonts.gstatic.com; img-src 'self' data: blob: asset: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' ipc: http://ipc.localhost https://asset.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "category": "Utility",
+    "publisher": "Eric Emerson Tan",
+    "copyright": "Copyright © 2026 Eric Emerson Tan",
+    "homepage": "https://github.com/eect13/potion",
+    "licenseFile": "../LICENSE",
+    "shortDescription": "A folder for your apps",
+    "longDescription": "Potion is a desktop locker: folders, files, list and grid, optional cloud when you sign in. Guest files stay on this computer.",
+    "icon": [
+      "icons/icon.ico",
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "allowDowngrades": true,
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    },
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}

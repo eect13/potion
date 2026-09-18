@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover" />
+    <title>Potion</title>
+    <meta name="theme-color" content="#0a0b0a" />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./icon-32.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Outfit:wght@300;400;500;600;700&display=swap" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("potion-theme") === "light" ? "light" : "dark";
+          var r = document.documentElement;
+          r.classList.remove("light", "dark");
+          r.classList.add(t);
+          r.style.colorScheme = t;
+        } catch (e) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
+  </head>
+  <body class="bg-background text-foreground">
+    <div id="potion-root">Opening Potion…</div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

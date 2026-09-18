@@ -1,5 +1,6 @@
-import { readdirSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -11,6 +12,32 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
+
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+
+/** `tauri build` sets these. Skip Nitro SSR — the installer only needs static files + index.html. */
+const isTauriBuild = Boolean(
+  process.env.TAURI_ENV_PLATFORM || process.env.TAURI_ENV_FAMILY || process.env.TAURI_PLATFORM,
+);
+
+function tauriIndexPlugin(): Plugin {
+  let outDir = "";
+  return {
+    name: "tauri-desktop-index",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const desktop = join(outDir, "desktop.html");
+      const index = join(outDir, "index.html");
+      if (!existsSync(desktop)) return;
+      const html = readFileSync(desktop, "utf8");
+      if (!html.includes("potion-root") || html.includes("/src/main.tsx")) return;
+      copyFileSync(desktop, index);
+    },
+  };
+}
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
 function hasGlobbedMigrations(root: string): boolean {
@@ -145,39 +172,68 @@ function authPopupPlugin(): Plugin {
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
-export default defineConfig(({ command, isPreview }) => ({
-  server: {
-    host: "0.0.0.0",
-    port: 8080,
-    strictPort: true,
-  },
-  preview: {
-    host: "127.0.0.1",
-    port: 8081,
-    strictPort: true,
-  },
-  resolve: { tsconfigPaths: true },
-  plugins: [
-    pgliteBootstrapPlugin(),
-    // Before tanstackStart so /auth/popup never falls through to the SPA.
-    authPopupPlugin(),
-    // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
-    appEnvPlugin(),
-    // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
-    grokPwaPlugin(),
-    tailwindcss(),
-    tanstackStart(),
-    ...(command === "build" || isPreview
-      ? [
-          nitro({
-            preset: "vercel",
-            // Auto-registers server/middleware/* (the PWA install page +
-            // manifest + head-tag middleware). Nitro v3 defaults serverDir to
-            // false, so removing this silently unwires /?install=1 on deploys.
-            serverDir: "./server",
-          }),
-        ]
-      : []),
-    viteReact(),
-  ],
-}));
+export default defineConfig(({ command, isPreview }) => {
+  if (isTauriBuild) {
+    return {
+      root: projectRoot,
+      clearScreen: false,
+      base: "./",
+      input: "desktop.html",
+      plugins: [tailwindcss(), viteReact(), tauriIndexPlugin()],
+      resolve: {
+        tsconfigPaths: true,
+        alias: {
+          "@/lib/potion-cloud": join(projectRoot, "src/lib/potion-cloud.desktop.ts"),
+        },
+      },
+      build: {
+        outDir: join(projectRoot, ".vercel", "output", "static"),
+        emptyOutDir: true,
+        chunkSizeWarningLimit: 900,
+        rolldownOptions: {
+          input: "desktop.html",
+        },
+      },
+    };
+  }
+
+  return {
+    server: {
+      host: "0.0.0.0",
+      port: 8080,
+      strictPort: true,
+      watch: {
+        ignored: ["**/src-tauri/**", "**/*.pdb", "**/target/**"],
+      },
+    },
+    preview: {
+      host: "127.0.0.1",
+      port: 8081,
+      strictPort: true,
+    },
+    resolve: { tsconfigPaths: true },
+    plugins: [
+      pgliteBootstrapPlugin(),
+      // Before tanstackStart so /auth/popup never falls through to the SPA.
+      authPopupPlugin(),
+      // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
+      appEnvPlugin(),
+      // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
+      grokPwaPlugin(),
+      tailwindcss(),
+      tanstackStart(),
+      ...(command === "build" || isPreview
+        ? [
+            nitro({
+              preset: "vercel",
+              // Auto-registers server/middleware/* (the PWA install page +
+              // manifest + head-tag middleware). Nitro v3 defaults serverDir to
+              // false, so removing this silently unwires /?install=1 on deploys.
+              serverDir: "./server",
+            }),
+          ]
+        : []),
+      viteReact(),
+    ],
+  };
+});

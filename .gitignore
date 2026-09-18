@@ -21,3 +21,16 @@ AGENTS.project.md
 .project_id
 startup.sh
 
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+WixTools
+
+# generated installers (keep the one-click bats)
+*.msi
+*.exe
+*.apk
+!desktop-setup.bat
+!deploy.bat
+!apk.bat
+!deploy/android/apk.bat
