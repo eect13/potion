@@ -1,49 +1,52 @@
-/** Erlenmeyer flask + italic serif P. 32×32, optically centered. */
+/** Source flask PNG — scale/center only, do not redraw. */
 
 export const INK = "#0a0b0a";
 export const CREAM = "#d7dbd4";
-export const INK_RGB = [0x0a, 0x0b, 0x0a];
-export const CREAM_RGB = [0xd7, 0xdb, 0xd4];
+export const LOGO_HREF = "/potion-logo.png";
+export const LOGO_W = 268;
+export const LOGO_H = 301;
+/** Padding around the flask inside the 32×32 tile (contain + center). */
+export const LOGO_PAD = 0.07;
 
-/**
- * Classic Erlenmeyer: simple lip, cylinder neck, straight cone, rounded bottom.
- * Fitted from the reference silhouette into a 32×32 tile with even padding.
- */
-export const MARK_FLASK_D =
-  "M11 1.42h10v1.16h-.64v7.57L28.92 26.7C28.92 29.15 24.4 30.62 16 30.62S3.08 29.15 3.08 26.7L11.64 10.15V2.58H11z";
-export const MARK_FLASK = `<path d="${MARK_FLASK_D}"/>`;
-
-/**
- * Liberation Serif Bold Italic "P".
- * Sits in the flask body (not the neck), stem through the rounded bottom,
- * bowl optically centered on x=16.
- */
-export const MARK_P_TRANSFORM = "matrix(0.248 0 0 0.248 7.42 31.1)";
-export const MARK_P_PATH =
-  "M27.54-31.05L31.40-31.05Q35.11-31.05 38.06-32.20Q41.02-33.35 43.09-35.52Q45.17-37.70 46.29-40.80Q47.41-43.90 47.41-47.85Q47.41-51.22 46.53-53.54Q45.65-55.86 44.14-57.32Q42.63-58.79 40.53-59.42Q38.43-60.06 36.04-60.06L32.67-60.06L27.54-31.05M33.54-25.68L26.56-25.68L22.85-4.88L33.54-3.56L33.01 0L-0.05 0L0.49-3.56L8.40-4.88L18.26-60.64L10.06-61.91L10.64-65.48L36.57-65.48Q43.21-65.48 47.97-64.26Q52.73-63.04 55.79-60.77Q58.84-58.50 60.28-55.25Q61.72-52 61.72-48Q61.72-43.02 60.01-38.92Q58.30-34.81 54.81-31.86Q51.32-28.91 46.02-27.29Q40.72-25.68 33.54-25.68";
-export const MARK_P = `<g transform="${MARK_P_TRANSFORM}"><path d="${MARK_P_PATH}"/></g>`;
+export function logoPlacement(size = 32, pad = LOGO_PAD) {
+  const avail = size * (1 - pad * 2);
+  const s = Math.min(avail / LOGO_W, avail / LOGO_H);
+  const w = LOGO_W * s;
+  const h = LOGO_H * s;
+  return {
+    x: +((size - w) / 2).toFixed(3),
+    y: +((size - h) / 2).toFixed(3),
+    w: +w.toFixed(3),
+    h: +h.toFixed(3),
+  };
+}
 
 export function markSvg({
   size = 32,
   rounded = false,
   flask = CREAM,
-  cut = INK,
   background = INK,
   pad = 0,
+  maskHref = LOGO_HREF,
 } = {}) {
-  const tile = rounded
-    ? `<rect width="32" height="32" rx="8" fill="${background}"/>`
-    : `<rect width="32" height="32" fill="${background}"/>`;
+  const tileSize = 32;
   const vb = pad
-    ? `${-pad} ${-pad} ${32 + pad * 2} ${32 + pad * 2}`
-    : "0 0 32 32";
+    ? `${-pad} ${-pad} ${tileSize + pad * 2} ${tileSize + pad * 2}`
+    : `0 0 ${tileSize} ${tileSize}`;
   const bleed = pad
-    ? `<rect x="${-pad}" y="${-pad}" width="${32 + pad * 2}" height="${32 + pad * 2}" fill="${background}"/>`
+    ? `<rect x="${-pad}" y="${-pad}" width="${tileSize + pad * 2}" height="${tileSize + pad * 2}" fill="${background}"/>`
     : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${vb}" shape-rendering="geometricPrecision">
+  const tile = rounded
+    ? `<rect width="${tileSize}" height="${tileSize}" rx="8" fill="${background}"/>`
+    : `<rect width="${tileSize}" height="${tileSize}" fill="${background}"/>`;
+  const p = logoPlacement(tileSize, LOGO_PAD);
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${size}" height="${size}" viewBox="${vb}">
 ${bleed}${tile}
-<g fill="${flask}">${MARK_FLASK}</g>
-<g fill="${cut}">${MARK_P}</g>
+<defs>
+  <mask id="potion-flask" maskUnits="userSpaceOnUse" mask-type="alpha">
+    <image href="${maskHref}" xlink:href="${maskHref}" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" preserveAspectRatio="xMidYMid meet"/>
+  </mask>
+</defs>
+<rect width="${tileSize}" height="${tileSize}" fill="${flask}" mask="url(#potion-flask)"/>
 </svg>`;
 }
-

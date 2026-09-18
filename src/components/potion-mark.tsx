@@ -1,21 +1,13 @@
 import { cn } from "@/lib/utils";
 
+/** Your flask PNG, scaled to fit. Shape is not redrawn. */
 export function PotionMark({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 32 32"
-      className={cn("shrink-0", className)}
+    <span
+      className={cn("relative inline-block shrink-0 overflow-hidden rounded-[25%] bg-accent", className)}
       aria-hidden
-      fill="none"
-      shapeRendering="geometricPrecision"
     >
-      <rect width="32" height="32" rx="8" className="fill-accent" />
-      <g className="fill-accent-foreground">
-        <path d="M11 1.42h10v1.16h-.64v7.57L28.92 26.7C28.92 29.15 24.4 30.62 16 30.62S3.08 29.15 3.08 26.7L11.64 10.15V2.58H11z" />
-      </g>
-      <g className="fill-accent" transform="matrix(0.248 0 0 0.248 7.42 31.1)">
-        <path d="M27.54-31.05L31.40-31.05Q35.11-31.05 38.06-32.20Q41.02-33.35 43.09-35.52Q45.17-37.70 46.29-40.80Q47.41-43.90 47.41-47.85Q47.41-51.22 46.53-53.54Q45.65-55.86 44.14-57.32Q42.63-58.79 40.53-59.42Q38.43-60.06 36.04-60.06L32.67-60.06L27.54-31.05M33.54-25.68L26.56-25.68L22.85-4.88L33.54-3.56L33.01 0L-0.05 0L0.49-3.56L8.40-4.88L18.26-60.64L10.06-61.91L10.64-65.48L36.57-65.48Q43.21-65.48 47.97-64.26Q52.73-63.04 55.79-60.77Q58.84-58.50 60.28-55.25Q61.72-52 61.72-48Q61.72-43.02 60.01-38.92Q58.30-34.81 54.81-31.86Q51.32-28.91 46.02-27.29Q40.72-25.68 33.54-25.68" />
-      </g>
-    </svg>
+      <span className="potion-logo-mask absolute inset-[7%] bg-accent-foreground" />
+    </span>
   );
 }

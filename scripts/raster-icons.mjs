@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * HD flask+P from SVG (Playwright) → PNG set + Windows **BMP** .ico.
- * PNG-in-ICO shows as a white square on the shortcut; Explorer wants BMP DIB.
- * ICO pixels come from the SVG raster (decoded PNG), not a blocky geometry fill.
+ * Scale the source flask PNG onto tiles. Do not redraw the mark.
+ * Playwright rasters + Windows BMP .ico (PNG-in-ICO is a white square in Explorer).
  */
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
-import { CREAM, INK, markSvg } from "./potion-mark-geom.mjs";
+import { CREAM, INK, LOGO_PAD, logoPlacement } from "./potion-mark-geom.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
 const ICONS = join(ROOT, "src-tauri", "icons");
+const PUBLIC = join(ROOT, "public");
+const LOGO_PNG = join(PUBLIC, "potion-logo.png");
+const MASK_PNG = join(PUBLIC, "potion-logo-mask.png");
 const ICO_SIZES = [16, 24, 32, 48, 64, 256];
 
 function paeth(a, b, c) {
@@ -92,8 +94,7 @@ function decodePng(buf) {
 
 function bmp32(size, rgba) {
   const xor = size * size * 4;
-  const andRow = Math.ceil(size / 32) * 4;
-  const buf = Buffer.alloc(40 + xor + andRow * size);
+  const buf = Buffer.alloc(40 + xor);
   buf.writeUInt32LE(40, 0);
   buf.writeInt32LE(size, 4);
   buf.writeInt32LE(size * 2, 8);
@@ -136,22 +137,39 @@ function icoFromBmp(images) {
   return out;
 }
 
+const logoData = `data:image/png;base64,${readFileSync(LOGO_PNG).toString("base64")}`;
+const maskData = `data:image/png;base64,${readFileSync(MASK_PNG).toString("base64")}`;
+
+function tileHtml(size, { rounded = true, padFrac = LOGO_PAD } = {}) {
+  const radius = rounded ? Math.round(size * 0.25) : 0;
+  const inset = `${padFrac * 100}%`;
+  return `<!doctype html><html><body style="margin:0">
+<div style="width:${size}px;height:${size}px;background:${INK};border-radius:${radius}px;position:relative;overflow:hidden">
+  <div style="position:absolute;inset:${inset};background:${CREAM};-webkit-mask-image:url(${logoData});mask-image:url(${logoData});-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center"></div>
+</div></body></html>`;
+}
+
+const favPlace = logoPlacement(32, LOGO_PAD);
+writeFileSync(
+  join(PUBLIC, "favicon.svg"),
+  `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="8" fill="${INK}"/>
+  <defs>
+    <mask id="flask" maskUnits="userSpaceOnUse">
+      <image href="${maskData}" xlink:href="${maskData}" x="${favPlace.x}" y="${favPlace.y}" width="${favPlace.w}" height="${favPlace.h}" preserveAspectRatio="xMidYMid meet"/>
+    </mask>
+  </defs>
+  <rect width="32" height="32" fill="${CREAM}" mask="url(#flask)"/>
+</svg>
+`,
+);
+
 const browser = await chromium.launch({ args: ["--disable-gpu"] });
 const page = await browser.newPage({ deviceScaleFactor: 1 });
 
-async function pngAt(size, { rounded = false, pad = 0 } = {}) {
+async function pngAt(size, opts = {}) {
   await page.setViewportSize({ width: size, height: size });
-  await page.setContent(
-    `<!doctype html><html><body style="margin:0;background:${INK}">${markSvg({
-      size,
-      rounded,
-      pad,
-      flask: CREAM,
-      cut: INK,
-      background: INK,
-    })}</body></html>`,
-    { waitUntil: "load" },
-  );
+  await page.setContent(tileHtml(size, opts), { waitUntil: "load" });
   return Buffer.from(await page.screenshot({ type: "png", omitBackground: false }));
 }
 
@@ -191,15 +209,14 @@ if (ico.readUInt32LE(firstOff) !== 40) {
 }
 writeFileSync(join(ICONS, "icon.ico"), ico);
 
-const publicDir = join(ROOT, "public");
-const grok = join(publicDir, "__grok");
+const grok = join(PUBLIC, "__grok");
 mkdirSync(grok, { recursive: true });
-copyFileSync(join(ICONS, "32x32.png"), join(publicDir, "icon-32.png"));
-writeFileSync(join(publicDir, "favicon.ico"), ico);
-writeFileSync(join(publicDir, "icon-192.png"), png192);
-writeFileSync(join(publicDir, "icon-180.png"), png180);
+copyFileSync(join(ICONS, "32x32.png"), join(PUBLIC, "icon-32.png"));
+writeFileSync(join(PUBLIC, "favicon.ico"), ico);
+writeFileSync(join(PUBLIC, "icon-192.png"), png192);
+writeFileSync(join(PUBLIC, "icon-180.png"), png180);
 writeFileSync(join(grok, "icon-180.png"), png180);
-writeFileSync(join(publicDir, "icon-512.png"), png512);
+writeFileSync(join(PUBLIC, "icon-512.png"), png512);
 
 const DENSITIES = {
   "mipmap-mdpi": { launcher: 48, foreground: 108 },
@@ -212,10 +229,8 @@ const androidRoot = join(ICONS, "android");
 for (const [folder, sizes] of Object.entries(DENSITIES)) {
   const dir = join(androidRoot, folder);
   mkdirSync(dir, { recursive: true });
-  const fgPad = (32 * (1 / 0.44 - 1)) / 2;
-  const fullPad = (32 * (1 / 0.72 - 1)) / 2;
-  const fg = await pngAt(sizes.foreground, { rounded: false, pad: fgPad });
-  const full = await pngAt(sizes.launcher, { rounded: false, pad: fullPad });
+  const fg = await pngAt(sizes.foreground, { rounded: false, padFrac: 0.28 });
+  const full = await pngAt(sizes.launcher, { rounded: false, padFrac: 0.14 });
   writeFileSync(join(dir, "ic_launcher_foreground.png"), fg);
   writeFileSync(join(dir, "ic_launcher.png"), full);
   writeFileSync(join(dir, "ic_launcher_round.png"), full);
@@ -233,4 +248,4 @@ writeFileSync(
 );
 
 await browser.close();
-console.log(`Icons ready (BMP ico ${ico.length}B + HD SVG rasters + android mipmaps).`);
+console.log(`Icons ready from source flask PNG (BMP ico ${ico.length}B).`);
