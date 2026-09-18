@@ -1,57 +1,95 @@
 #!/usr/bin/env node
 /**
- * Opaque ink-tile flask+P → PNG set + Windows **BMP** .ico.
- * PNG-in-ICO is a white square on the shortcut and the taskbar
- * (Explorer does not paint PNG entries at 16/32/48).
- *
- * ICO pixels are drawn in Node (not canvas getImageData — Chromium headless
- * often returns a black buffer for alpha:false canvases).
+ * HD flask+P from SVG (Playwright) → PNG set + Windows **BMP** .ico.
+ * PNG-in-ICO shows as a white square on the shortcut; Explorer wants BMP DIB.
+ * ICO pixels come from the SVG raster (decoded PNG), not a blocky geometry fill.
  */
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
-import { CREAM, CREAM_RGB, INK, INK_RGB, MARK_CUTS, MARK_FLASK, inCream } from "./potion-mark-geom.mjs";
+import { CREAM, INK, markSvg } from "./potion-mark-geom.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
 const ICONS = join(ROOT, "src-tauri", "icons");
 const ICO_SIZES = [16, 24, 32, 48, 64, 256];
 
-function drawHtml(size) {
-  return `<!doctype html>
-<html><body style="margin:0;background:${INK}">
-<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32" shape-rendering="geometricPrecision">
-  <rect width="32" height="32" fill="${INK}"/>
-  <g transform="translate(16 16)">
-    <g fill="${CREAM}">${MARK_FLASK}</g>
-    <g fill="${INK}">${MARK_CUTS}</g>
-  </g>
-</svg>
-</body></html>`;
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
 }
 
-/** Same mark as the SVG, as RGBA — used for the BMP .ico. */
-function rgbaAt(size) {
-  const rgba = Buffer.alloc(size * size * 4);
-  for (let py = 0; py < size; py++) {
-    for (let px = 0; px < size; px++) {
-      const x = ((px + 0.5) / size) * 32;
-      const y = ((py + 0.5) / size) * 32;
-      const rgb = inCream(x, y) ? CREAM_RGB : INK_RGB;
-      const i = (py * size + px) * 4;
-      rgba[i] = rgb[0];
-      rgba[i + 1] = rgb[1];
-      rgba[i + 2] = rgb[2];
-      rgba[i + 3] = 255;
+function applyFilter(type, cur, prev, bpp) {
+  for (let i = 0; i < cur.length; i++) {
+    const left = i >= bpp ? cur[i - bpp] : 0;
+    const up = prev[i];
+    const ul = i >= bpp ? prev[i - bpp] : 0;
+    let x = cur[i];
+    if (type === 1) x += left;
+    else if (type === 2) x += up;
+    else if (type === 3) x += (left + up) >> 1;
+    else if (type === 4) x += paeth(left, up, ul);
+    cur[i] = x & 255;
+  }
+}
+
+function decodePng(buf) {
+  if (buf[0] !== 137 || buf[1] !== 80) throw new Error("not a PNG");
+  let off = 8;
+  let w = 0;
+  let h = 0;
+  let depth = 8;
+  let ctype = 6;
+  const idats = [];
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString("ascii", off + 4, off + 8);
+    const data = buf.subarray(off + 8, off + 8 + len);
+    off += 12 + len;
+    if (type === "IHDR") {
+      w = data.readUInt32BE(0);
+      h = data.readUInt32BE(4);
+      depth = data[8];
+      ctype = data[9];
+    } else if (type === "IDAT") {
+      idats.push(data);
+    } else if (type === "IEND") {
+      break;
     }
   }
-  if (rgba[0] !== INK_RGB[0] || rgba[1] !== INK_RGB[1] || rgba[2] !== INK_RGB[2]) {
-    throw new Error("ink tile raster produced a non-ink pixel");
+  if (depth !== 8 || (ctype !== 2 && ctype !== 6)) {
+    throw new Error(`unsupported png depth=${depth} color=${ctype}`);
   }
-  return rgba;
+  const bpp = ctype === 6 ? 4 : 3;
+  const raw = inflateSync(Buffer.concat(idats));
+  const stride = w * bpp;
+  const rgba = Buffer.alloc(w * h * 4);
+  const prev = Buffer.alloc(stride);
+  const cur = Buffer.alloc(stride);
+  let src = 0;
+  for (let y = 0; y < h; y++) {
+    const filter = raw[src++];
+    raw.copy(cur, 0, src, src + stride);
+    src += stride;
+    applyFilter(filter, cur, prev, bpp);
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const j = x * bpp;
+      rgba[i] = cur[j];
+      rgba[i + 1] = cur[j + 1];
+      rgba[i + 2] = cur[j + 2];
+      rgba[i + 3] = bpp === 4 ? cur[j + 3] : 255;
+    }
+    cur.copy(prev);
+  }
+  return { w, h, rgba };
 }
 
-/** 32-bit BMP DIB (bottom-up BGRA + zero AND mask). What Explorer reads. */
 function bmp32(size, rgba) {
   const xor = size * size * 4;
   const andRow = Math.ceil(size / 32) * 4;
@@ -101,34 +139,54 @@ function icoFromBmp(images) {
 const browser = await chromium.launch({ args: ["--disable-gpu"] });
 const page = await browser.newPage({ deviceScaleFactor: 1 });
 
-async function pngAt(size) {
+async function pngAt(size, { rounded = false, pad = 0 } = {}) {
   await page.setViewportSize({ width: size, height: size });
-  await page.setContent(drawHtml(size), { waitUntil: "load" });
+  await page.setContent(
+    `<!doctype html><html><body style="margin:0;background:${INK}">${markSvg({
+      size,
+      rounded,
+      pad,
+      flask: CREAM,
+      cut: INK,
+      background: INK,
+    })}</body></html>`,
+    { waitUntil: "load" },
+  );
   return Buffer.from(await page.screenshot({ type: "png", omitBackground: false }));
 }
 
 mkdirSync(ICONS, { recursive: true });
-writeFileSync(join(ICONS, "icon-source.png"), await pngAt(1024));
-writeFileSync(join(ICONS, "icon.png"), await pngAt(512));
-writeFileSync(join(ICONS, "128x128@2x.png"), await pngAt(256));
-writeFileSync(join(ICONS, "128x128.png"), await pngAt(128));
-writeFileSync(join(ICONS, "64x64.png"), await pngAt(64));
-writeFileSync(join(ICONS, "32x32.png"), await pngAt(32));
-const png192 = await pngAt(192);
-const png180 = await pngAt(180);
-await browser.close();
 
-const ico = icoFromBmp(ICO_SIZES.map((size) => ({ size, buf: bmp32(size, rgbaAt(size)) })));
+const png1024 = await pngAt(1024, { rounded: true });
+const png512 = await pngAt(512, { rounded: true });
+const png256 = await pngAt(256, { rounded: true });
+const png192 = await pngAt(192, { rounded: true });
+const png180 = await pngAt(180, { rounded: true });
+const png128 = await pngAt(128, { rounded: true });
+const png64 = await pngAt(64, { rounded: true });
+const png32 = await pngAt(32, { rounded: true });
+
+writeFileSync(join(ICONS, "icon-source.png"), png1024);
+writeFileSync(join(ICONS, "icon.png"), png1024);
+writeFileSync(join(ICONS, "128x128@2x.png"), png256);
+writeFileSync(join(ICONS, "128x128.png"), png128);
+writeFileSync(join(ICONS, "64x64.png"), png64);
+writeFileSync(join(ICONS, "32x32.png"), png32);
+
+const icoImages = [];
+for (const size of ICO_SIZES) {
+  const png = await pngAt(size, { rounded: true });
+  const decoded = decodePng(png);
+  if (decoded.w !== size || decoded.h !== size) {
+    throw new Error(`png ${size} decoded as ${decoded.w}x${decoded.h}`);
+  }
+  icoImages.push({ size, buf: bmp32(size, decoded.rgba) });
+}
+
+const ico = icoFromBmp(icoImages);
 const firstOff = ico.readUInt32LE(18);
 if (ico.readUInt32LE(firstOff) !== 40) {
   console.error("ico first image is not a BMP DIB (Explorer would show a white square)");
-  process.exit(1);
-}
-const b = ico[firstOff + 40];
-const g = ico[firstOff + 41];
-const r = ico[firstOff + 42];
-if (r !== INK_RGB[0] || g !== INK_RGB[1] || b !== INK_RGB[2]) {
-  console.error(`ico pixel is rgb(${r},${g},${b}), expected ink`);
   process.exit(1);
 }
 writeFileSync(join(ICONS, "icon.ico"), ico);
@@ -137,19 +195,42 @@ const publicDir = join(ROOT, "public");
 const grok = join(publicDir, "__grok");
 mkdirSync(grok, { recursive: true });
 copyFileSync(join(ICONS, "32x32.png"), join(publicDir, "icon-32.png"));
-copyFileSync(join(ICONS, "icon.png"), join(publicDir, "icon-512.png"));
 writeFileSync(join(publicDir, "favicon.ico"), ico);
 writeFileSync(join(publicDir, "icon-192.png"), png192);
+writeFileSync(join(publicDir, "icon-180.png"), png180);
 writeFileSync(join(grok, "icon-180.png"), png180);
+writeFileSync(join(publicDir, "icon-512.png"), png512);
 
-const androidIcons = spawnSync(process.execPath, [join(ROOT, "scripts", "android-launcher-icons.mjs")], {
-  cwd: ROOT,
-  stdio: "inherit",
-  env: process.env,
-});
-if ((androidIcons.status ?? 1) !== 0) {
-  console.error("android-launcher-icons failed");
-  process.exit(1);
+const DENSITIES = {
+  "mipmap-mdpi": { launcher: 48, foreground: 108 },
+  "mipmap-hdpi": { launcher: 72, foreground: 162 },
+  "mipmap-xhdpi": { launcher: 96, foreground: 216 },
+  "mipmap-xxhdpi": { launcher: 144, foreground: 324 },
+  "mipmap-xxxhdpi": { launcher: 192, foreground: 432 },
+};
+const androidRoot = join(ICONS, "android");
+for (const [folder, sizes] of Object.entries(DENSITIES)) {
+  const dir = join(androidRoot, folder);
+  mkdirSync(dir, { recursive: true });
+  const fgPad = (32 * (1 / 0.44 - 1)) / 2;
+  const fullPad = (32 * (1 / 0.72 - 1)) / 2;
+  const fg = await pngAt(sizes.foreground, { rounded: false, pad: fgPad });
+  const full = await pngAt(sizes.launcher, { rounded: false, pad: fullPad });
+  writeFileSync(join(dir, "ic_launcher_foreground.png"), fg);
+  writeFileSync(join(dir, "ic_launcher.png"), full);
+  writeFileSync(join(dir, "ic_launcher_round.png"), full);
 }
 
-console.log(`Icons ready (BMP ico ${ico.length}B + flask PNGs).`);
+const values = join(androidRoot, "values");
+mkdirSync(values, { recursive: true });
+writeFileSync(
+  join(values, "ic_launcher_background.xml"),
+  `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#0A0B0A</color>
+</resources>
+`,
+);
+
+await browser.close();
+console.log(`Icons ready (BMP ico ${ico.length}B + HD SVG rasters + android mipmaps).`);

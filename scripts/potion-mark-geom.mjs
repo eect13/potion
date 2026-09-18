@@ -1,58 +1,49 @@
-/** Shared flask + italic P geometry (32×32 design space). */
+/** Erlenmeyer flask + italic serif P. 32×32, optically centered. */
 
 export const INK = "#0a0b0a";
 export const CREAM = "#d7dbd4";
 export const INK_RGB = [0x0a, 0x0b, 0x0a];
 export const CREAM_RGB = [0xd7, 0xdb, 0xd4];
 
-const SKEW = Math.tan((-16 * Math.PI) / 180);
+/**
+ * Classic Erlenmeyer: simple lip, cylinder neck, straight cone, rounded bottom.
+ * Fitted from the reference silhouette into a 32×32 tile with even padding.
+ */
+export const MARK_FLASK_D =
+  "M11 1.42h10v1.16h-.64v7.57L28.92 26.7C28.92 29.15 24.4 30.62 16 30.62S3.08 29.15 3.08 26.7L11.64 10.15V2.58H11z";
+export const MARK_FLASK = `<path d="${MARK_FLASK_D}"/>`;
 
-export const MARK_FLASK = `
-  <path d="M-3.9-12.15a3.9 1.55 0 0 1 7.8 0v2.2c0 .42-.4.75-.88.75h-6.04c-.48 0-.88-.33-.88-.75z"/>
-  <rect x="-3.95" y="-9.2" width="7.9" height="1.6" rx=".42"/>
-  <path d="M-1.7-7.6h3.4v2.5c2.15.95 5.7 3.05 5.7 8.2a7.85 8.15 0 1 1-15.7 0c0-5.15 3.55-7.25 5.7-8.2v-2.5z"/>
-`;
+/**
+ * Liberation Serif Bold Italic "P".
+ * Sits in the flask body (not the neck), stem through the rounded bottom,
+ * bowl optically centered on x=16.
+ */
+export const MARK_P_TRANSFORM = "matrix(0.248 0 0 0.248 7.42 31.1)";
+export const MARK_P_PATH =
+  "M27.54-31.05L31.40-31.05Q35.11-31.05 38.06-32.20Q41.02-33.35 43.09-35.52Q45.17-37.70 46.29-40.80Q47.41-43.90 47.41-47.85Q47.41-51.22 46.53-53.54Q45.65-55.86 44.14-57.32Q42.63-58.79 40.53-59.42Q38.43-60.06 36.04-60.06L32.67-60.06L27.54-31.05M33.54-25.68L26.56-25.68L22.85-4.88L33.54-3.56L33.01 0L-0.05 0L0.49-3.56L8.40-4.88L18.26-60.64L10.06-61.91L10.64-65.48L36.57-65.48Q43.21-65.48 47.97-64.26Q52.73-63.04 55.79-60.77Q58.84-58.50 60.28-55.25Q61.72-52 61.72-48Q61.72-43.02 60.01-38.92Q58.30-34.81 54.81-31.86Q51.32-28.91 46.02-27.29Q40.72-25.68 33.54-25.68";
+export const MARK_P = `<g transform="${MARK_P_TRANSFORM}"><path d="${MARK_P_PATH}"/></g>`;
 
-export const MARK_CUTS = `
-  <circle cx="-4.35" cy="2.55" r="1.05"/>
-  <circle cx="-3.15" cy="4.45" r=".48"/>
-  <g transform="skewX(-16)">
-    <path fill-rule="evenodd" d="M-2.7.15v8.55h1.72V5.2h1.42c2.42 0 3.82-1.28 3.82-3.12 0-1.84-1.32-1.93-3.55-1.93H-2.7zm1.72 1.48h1.48c1.18 0 1.88.36 1.88 1.22s-.7 1.3-1.88 1.3h-1.48V1.63z"/>
-  </g>
-`;
-
-function inEllipse(x, y, cx, cy, rx, ry) {
-  const dx = (x - cx) / rx;
-  const dy = (y - cy) / ry;
-  return dx * dx + dy * dy <= 1;
+export function markSvg({
+  size = 32,
+  rounded = false,
+  flask = CREAM,
+  cut = INK,
+  background = INK,
+  pad = 0,
+} = {}) {
+  const tile = rounded
+    ? `<rect width="32" height="32" rx="8" fill="${background}"/>`
+    : `<rect width="32" height="32" fill="${background}"/>`;
+  const vb = pad
+    ? `${-pad} ${-pad} ${32 + pad * 2} ${32 + pad * 2}`
+    : "0 0 32 32";
+  const bleed = pad
+    ? `<rect x="${-pad}" y="${-pad}" width="${32 + pad * 2}" height="${32 + pad * 2}" fill="${background}"/>`
+    : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${vb}" shape-rendering="geometricPrecision">
+${bleed}${tile}
+<g fill="${flask}">${MARK_FLASK}</g>
+<g fill="${cut}">${MARK_P}</g>
+</svg>`;
 }
 
-function inFlask(x, y) {
-  if (inEllipse(x, y, 16, 3.85, 3.9, 1.55)) return true;
-  if (x >= 12.1 && x <= 19.9 && y >= 3.85 && y <= 6.2) return true;
-  if (x >= 12.05 && x <= 19.95 && y >= 6.8 && y <= 8.4) return true;
-  if (x >= 14.3 && x <= 17.7 && y >= 7.4 && y <= 11.4) return true;
-  return inEllipse(x, y, 16, 20.25, 7.85, 8.15);
-}
-
-function inShine(x, y) {
-  return inEllipse(x, y, 11.65, 18.55, 1.05, 1.05) || inEllipse(x, y, 12.85, 20.45, 0.48, 0.48);
-}
-
-function unskewX(x, y) {
-  return x - (y - 16) * SKEW;
-}
-
-function inP(x, y) {
-  const sx = unskewX(x, y);
-  if (sx >= 13.3 && sx <= 15.02 && y >= 16.15 && y <= 24.7) return true;
-  const inBowl = sx >= 13.3 && sx <= 17.24 && y >= 16.15 && y <= 19.35;
-  if (!inBowl) return false;
-  const inHole = sx >= 15.02 && sx <= 16.9 && y >= 17.63 && y <= 19.2;
-  return !inHole;
-}
-
-/** True when the pixel should be cream (flask body), not ink (tile / P / shine). */
-export function inCream(x, y) {
-  return x >= 0 && x <= 32 && y >= 0 && y <= 32 && inFlask(x, y) && !inP(x, y) && !inShine(x, y);
-}
