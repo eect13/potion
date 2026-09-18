@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-background: #0a0b0a;
+  --color-foreground: #f3f4ef;
+  --color-muted: #8f968c;
+  --color-faint: #5c6358;
+  --color-card: #131513;
+  --color-elevated: #1a1d1a;
+  --color-accent: #d7dbd4;
+  --color-accent-foreground: #0a0b0a;
+  --color-border: #262926;
+  --color-destructive: #c45c5c;
+  --font-sans: "Outfit", "Segoe UI", system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+html.light {
+  --color-background: #f3f1ea;
+  --color-foreground: #1a1c18;
+  --color-muted: #5c6358;
+  --color-faint: #8a9084;
+  --color-card: #fffcf6;
+  --color-elevated: #ece8de;
+  --color-accent: #1a1c18;
+  --color-accent-foreground: #f3f1ea;
+  --color-border: #ddd8cc;
+  --color-destructive: #a33b3b;
+  --shadow-border:
+    0 0 0 1px rgb(26 28 24 / 0.06),
+    0 1px 2px -1px rgb(26 28 24 / 0.06),
+    0 2px 4px 0 rgb(26 28 24 / 0.04);
+}
+
+html.dark {
+  --color-background: #0a0b0a;
+  --color-foreground: #f3f4ef;
+  --color-muted: #8f968c;
+  --color-faint: #5c6358;
+  --color-card: #131513;
+  --color-elevated: #1a1d1a;
+  --color-accent: #d7dbd4;
+  --color-accent-foreground: #0a0b0a;
+  --color-border: #262926;
+  --color-destructive: #c45c5c;
+  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html,
+  body,
+  #app {
+    min-height: 100%;
+    background: var(--color-background);
+    color: var(--color-foreground);
+  }
+  body {
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
