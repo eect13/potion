@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "@tanstack/react-router";
-import { Folder, FileText, Upload, Save, Trash2, Blocks, Copy, RotateCcw, Cloud, Sun, Moon, PanelLeftClose, PanelLeft, LogIn, Share2, CloudOff, MoreHorizontal, FolderInput, Link2, Play, Pause, Square, Plus, LayoutList, LayoutGrid } from "lucide-react";
+import { Folder, FileText, Upload, Save, Trash2, Blocks, Copy, RotateCcw, Cloud, Sun, Moon, PanelLeftClose, PanelLeft, LogIn, Share2, CloudOff, MoreHorizontal, FolderInput, Link2, Play, Pause, Square, Plus, LayoutList, LayoutGrid, Image as ImageIcon, Film, Music, FileArchive, File as FileIcon, Smartphone } from "lucide-react";
 import { PotionMark } from "@/components/potion-mark";
 import { APP_VERSION_LABEL } from "@/lib/version";
 import { readTheme, writeTheme, type Theme } from "@/lib/theme";
@@ -9,7 +9,7 @@ import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import * as api from "@/lib/potion-api";
 import type { ConnectedApp, PotionNode, RestoreRecord, StoreMode } from "@/lib/potion-api";
-import { formatBytes, cn } from "@/lib/utils";
+import { formatBytes, cn, fileKind } from "@/lib/utils";
 import { pauseSync, retrySync, startSync, stopSync, subscribeSync, type SyncState } from "@/lib/potion-sync";
 
 type View = "folder" | "apps" | "sync";
@@ -42,6 +42,7 @@ export function PotionApp() {
   const [selected, setSelected] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("list");
+  const [preview, setPreview] = useState<PotionNode | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef(0);
 
@@ -315,6 +316,7 @@ export function PotionApp() {
               </button>
               <button
                 type="button"
+                title="Photos, videos, PDFs, zips — any file"
                 className="inline-flex h-11 items-center gap-2 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60"
                 disabled={busy}
                 onClick={() => fileRef.current?.click()}
@@ -328,8 +330,9 @@ export function PotionApp() {
                 multiple
                 className="hidden"
                 onChange={(e) => {
-                  void upload(e.target.files);
+                  const list = e.target.files ? Array.from(e.target.files) : [];
                   e.target.value = "";
+                  void upload(list);
                 }}
               />
             </div>
@@ -367,9 +370,13 @@ export function PotionApp() {
                 setView("folder");
               }}
               onAdd={async (name) => {
-                const made = await api.addConnectedApp(mode, name);
-                ping(`Added ${made.name}`);
-                await refresh();
+                try {
+                  const made = await api.addConnectedApp(mode, name);
+                  ping(`Added ${made.name} — look in Folder / Apps`);
+                  await refresh();
+                } catch (err) {
+                  ping(err instanceof Error ? err.message : "Could not add app");
+                }
               }}
               onRemove={async (name) => {
                 await api.removeConnectedApp(name);
@@ -396,6 +403,7 @@ export function PotionApp() {
               ) : null}
               <FolderGrid
                 layout={layout}
+                mode={mode}
                 items={items}
                 over={over}
                 selected={selected}
@@ -404,6 +412,11 @@ export function PotionApp() {
                 onMenu={setMenuFor}
                 onOpen={(n) => {
                   if (n.kind === "folder") setParentId(n.id);
+                }}
+                onPreview={(n) => {
+                  const kind = fileKind(n.mime, n.name);
+                  if (kind === "image" || kind === "video" || kind === "audio") setPreview(n);
+                  else setSelected(n.id);
                 }}
                 onGet={(n) => void download(n)}
                 onCopy={(n) => void copyItem(n)}
@@ -477,6 +490,12 @@ export function PotionApp() {
       ) : null}
 
       {sheet ? <Modal onClose={() => setSheet(null)}>{sheet}</Modal> : null}
+
+      {preview ? (
+        <Modal onClose={() => setPreview(null)}>
+          <PreviewSheet node={preview} mode={mode} onClose={() => setPreview(null)} onGet={() => void download(preview)} />
+        </Modal>
+      ) : null}
 
       {toast ? (
         <div className="fixed bottom-20 left-1/2 z-30 -translate-x-1/2 rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-foreground md:bottom-5">
@@ -592,8 +611,117 @@ function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (l: Layo
   );
 }
 
+function kindIcon(kind: ReturnType<typeof fileKind>, className: string) {
+  const sw = 1.6;
+  if (kind === "image") return <ImageIcon className={className} strokeWidth={sw} />;
+  if (kind === "video") return <Film className={className} strokeWidth={sw} />;
+  if (kind === "audio") return <Music className={className} strokeWidth={sw} />;
+  if (kind === "zip") return <FileArchive className={className} strokeWidth={sw} />;
+  if (kind === "pdf") return <FileText className={className} strokeWidth={sw} />;
+  return <FileIcon className={className} strokeWidth={sw} />;
+}
+
+function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; layout: Layout }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const kind = node.kind === "file" ? fileKind(node.mime, node.name) : null;
+  const size = layout === "grid" ? "size-7" : "size-5";
+  useEffect(() => {
+    if (kind !== "image") return;
+    let gone = false;
+    let objectUrl: string | null = null;
+    void (async () => {
+      try {
+        const file = await api.getFile(mode, node.id);
+        if (!file || gone) return;
+        objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "image/*" }));
+        setUrl(objectUrl);
+      } catch {
+        /* keep icon */
+      }
+    })();
+    return () => {
+      gone = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [kind, mode, node.id]);
+  if (node.kind === "folder") {
+    if (node.name === "Apps") {
+      return <Blocks className={cn("shrink-0 text-muted", size)} strokeWidth={1.6} />;
+    }
+    return <Folder className={cn("shrink-0 text-muted", size)} strokeWidth={1.6} />;
+  }
+  if (url) {
+    return (
+      <span
+        className={cn(
+          "shrink-0 overflow-hidden bg-elevated",
+          layout === "grid" ? "size-12 rounded-lg" : "size-9 rounded-md",
+        )}
+      >
+        <img src={url} alt="" className="size-full object-cover" />
+      </span>
+    );
+  }
+  return kindIcon(kind ?? "file", cn("shrink-0 text-muted", size));
+}
+
+function PreviewSheet({
+  node,
+  mode,
+  onClose,
+  onGet,
+}: {
+  node: PotionNode;
+  mode: StoreMode;
+  onClose: () => void;
+  onGet: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const kind = fileKind(node.mime, node.name);
+  useEffect(() => {
+    let gone = false;
+    let objectUrl: string | null = null;
+    void (async () => {
+      const file = await api.getFile(mode, node.id);
+      if (!file || gone) return;
+      objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "application/octet-stream" }));
+      setUrl(objectUrl);
+    })();
+    return () => {
+      gone = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mode, node.id]);
+  return (
+    <div className="space-y-4">
+      <h3 className="truncate font-serif text-2xl italic">{node.name}</h3>
+      <p className="text-sm text-muted">{formatBytes(node.size)} · syncs with every other file in a Syncing folder</p>
+      {url && kind === "image" ? (
+        <img src={url} alt={node.name} className="max-h-80 w-full rounded-lg object-contain bg-elevated" />
+      ) : null}
+      {url && kind === "video" ? (
+        <video src={url} controls className="max-h-80 w-full rounded-lg bg-elevated" />
+      ) : null}
+      {url && kind === "audio" ? <audio src={url} controls className="w-full" /> : null}
+      <div className="flex justify-end gap-2">
+        <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
+          Close
+        </button>
+        <button
+          type="button"
+          className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
+          onClick={onGet}
+        >
+          Download
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FolderGrid({
   layout,
+  mode,
   items,
   over,
   selected,
@@ -601,6 +729,7 @@ function FolderGrid({
   onSelect,
   onMenu,
   onOpen,
+  onPreview,
   onGet,
   onCopy,
   onMove,
@@ -609,6 +738,7 @@ function FolderGrid({
   onTrash,
 }: {
   layout: Layout;
+  mode: StoreMode;
   items: PotionNode[];
   over: boolean;
   selected: string | null;
@@ -616,6 +746,7 @@ function FolderGrid({
   onSelect: (id: string | null) => void;
   onMenu: (id: string | null) => void;
   onOpen: (n: PotionNode) => void;
+  onPreview: (n: PotionNode) => void;
   onGet: (n: PotionNode) => void;
   onCopy: (n: PotionNode) => void;
   onMove: (n: PotionNode) => void;
@@ -650,7 +781,7 @@ function FolderGrid({
   if (items.length === 0) {
     return (
       <p className={cn("py-16 text-center text-muted", over && "rounded-xl outline-dashed outline-1 outline-accent")}>
-        Empty. Add files — no stock folders.
+        Empty. Add photos, videos, PDFs, zips — any file. Apps lives here too.
       </p>
     );
   }
@@ -673,8 +804,13 @@ function FolderGrid({
       >
         {items.map((item) => {
           const on = selected === item.id;
+          const kind = item.kind === "file" ? fileKind(item.mime, item.name) : null;
           const meta =
-            item.kind === "folder" ? (item.synced === false ? "Not syncing" : "Syncing") : formatBytes(item.size);
+            item.kind === "folder"
+              ? item.synced === false
+                ? "Not syncing"
+                : "Syncing"
+              : `${kind === "image" ? "Photo" : kind === "video" ? "Video" : kind === "audio" ? "Audio" : kind === "pdf" ? "PDF" : kind === "zip" ? "Archive" : "File"} · ${formatBytes(item.size)}`;
           return (
             <li key={item.id}>
               <article
@@ -697,14 +833,10 @@ function FolderGrid({
                   onClick={() => {
                     onMenu(null);
                     if (item.kind === "folder") onOpen(item);
-                    else onSelect(item.id);
+                    else onPreview(item);
                   }}
                 >
-                  {item.kind === "folder" ? (
-                    <Folder className={cn("shrink-0 text-muted", layout === "grid" ? "size-7" : "size-5")} strokeWidth={1.6} />
-                  ) : (
-                    <FileText className={cn("shrink-0 text-muted", layout === "grid" ? "size-7" : "size-5")} strokeWidth={1.6} />
-                  )}
+                  <NodeGlyph node={item} mode={mode} layout={layout} />
                   <span className="min-w-0 w-full">
                     <p className="truncate text-sm font-medium">{item.name}</p>
                     <p className="text-xs text-faint">{meta}</p>
@@ -1020,7 +1152,9 @@ function AppsPanel({
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-5">
       <p className="text-sm text-muted">
-        No stock apps. Type a name. Potion makes a folder. Remove it from this list anytime — the folder stays until you delete it.
+        No stock apps. Type a name. Potion makes a folder inside <span className="text-foreground">Apps</span>.
+        That Apps folder lives in Folder — open it to manage the files. Remove a name from this list anytime —
+        the folder stays until you delete it.
       </p>
       <form
         className="flex gap-2"
@@ -1101,6 +1235,7 @@ function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
     total: 0,
     current: "Idle",
     error: null,
+    skipped: 0,
   }));
   useEffect(() => subscribeSync(setJob), []);
   const running = job.status === "running";
@@ -1149,6 +1284,39 @@ function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
           {job.status} · {job.done}/{job.total} · {job.current}
         </p>
         {job.error ? <p className="text-sm text-destructive">{job.error}</p> : null}
+      </section>
+      <section className="space-y-3 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
+        <h2 className="text-foreground">How to use it</h2>
+        <ol className="list-decimal space-y-2 pl-4">
+          <li>
+            <span className="text-foreground">Folder</span> is the box. Drop photos, videos, music, PDFs, zips,
+            docs — every file type. Same as Dropbox, without the bill.
+          </li>
+          <li>
+            <span className="text-foreground">Apps</span> is not a second box. It is a real folder named Apps
+            inside Folder. Add a name here (Finance Manager, Atrium, …) and Potion makes that subfolder for
+            the other app to park backups. Open the name to jump there.
+          </li>
+          <li>
+            <span className="text-foreground">Sync</span> is the copy button, not another place for files.
+            Start copies every file in folders marked Syncing — pictures included. Pause holds. Stop clears.
+            Retry starts over. A folder set to “Don’t sync” is skipped.
+          </li>
+          <li>
+            No account: files stay on <span className="text-foreground">this</span> phone or computer.
+          </li>
+          <li>
+            Sign in, then Start: this device pushes into your locker and the locker pulls onto this device.
+            Same key on another phone or PC = same files.
+          </li>
+        </ol>
+        <p className="flex items-start gap-2 pt-1">
+          <Smartphone className="mt-0.5 size-4 shrink-0 text-faint" strokeWidth={1.75} />
+          <span>
+            The phone app is not a duplicate of Sync. It is another window on the same box. Use Folder to
+            manage files on the phone, Apps for other apps’ folders, Sync when you want the locker copy.
+          </span>
+        </p>
       </section>
       <p className="font-serif text-3xl italic text-foreground">Like a lunchbox.</p>
       <p>

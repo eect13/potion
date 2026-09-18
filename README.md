@@ -29,9 +29,9 @@ After the Windows installer: Desktop has one **Potion** shortcut (flask + P). Pi
 
 Open Potion. You do not need an account. Files live on this computer until you sign in and turn on sync.
 
-- **Folder** — list or grid. Copy, move, delete, share, sync / unsync.
-- **Apps** — type the names you want. Add and remove.
-- **Sync** — Start, Pause, Stop, Retry. Only when you ask.
+- **Folder** — list or grid. Photos, videos, PDFs, zips, docs — any file. Copy, move, delete, share, sync / unsync. The **Apps** folder lives here.
+- **Apps** — type the names you want. Each name becomes a subfolder of **Apps**. Add and remove from the list; the folder stays until you delete it.
+- **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to the locker when you are signed in. The phone app is another window on the same box, not a second Sync.
 
 ## Self-host (web)
 

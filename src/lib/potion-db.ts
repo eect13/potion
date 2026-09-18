@@ -95,6 +95,7 @@ function guessMime(name: string) {
     {
       ".txt": "text/plain",
       ".md": "text/markdown",
+      ".csv": "text/csv",
       ".json": "application/json",
       ".png": "image/png",
       ".jpg": "image/jpeg",
@@ -102,10 +103,29 @@ function guessMime(name: string) {
       ".gif": "image/gif",
       ".webp": "image/webp",
       ".svg": "image/svg+xml",
+      ".bmp": "image/bmp",
+      ".avif": "image/avif",
+      ".heic": "image/heic",
+      ".heif": "image/heif",
       ".pdf": "application/pdf",
       ".zip": "application/zip",
       ".mp3": "audio/mpeg",
+      ".wav": "audio/wav",
+      ".m4a": "audio/mp4",
+      ".ogg": "audio/ogg",
+      ".flac": "audio/flac",
       ".mp4": "video/mp4",
+      ".mov": "video/quicktime",
+      ".webm": "video/webm",
+      ".mkv": "video/x-matroska",
+      ".avi": "video/x-msvideo",
+      ".m4v": "video/mp4",
+      ".doc": "application/msword",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xls": "application/vnd.ms-excel",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".ppt": "application/vnd.ms-powerpoint",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     }[ext] || "application/octet-stream"
   );
 }
@@ -574,8 +594,9 @@ export async function stripWelcome() {
   }
 }
 
-const DROP_ROOT = new Set(["Documents", "Photos", "Apps"]);
+const DROP_ROOT = new Set(["Documents", "Photos"]);
 const EMPTY_STOCK = new Set(["Finance Manager", "Atrium", "Font Manager"]);
+export const APPS_FOLDER_NAME = "Apps";
 
 async function folderHasFiles(id: string): Promise<boolean> {
   const kids = await listChildren(id);
@@ -586,29 +607,22 @@ async function folderHasFiles(id: string): Promise<boolean> {
   return false;
 }
 
+export async function ensureAppsFolder() {
+  const root = await listChildren(null);
+  const found = root.find((n) => n.kind === "folder" && n.name === APPS_FOLDER_NAME);
+  if (found) return found;
+  return mkdir(null, APPS_FOLDER_NAME);
+}
+
+/** Drop leftover stock Documents/Photos. Keep the Apps folder so it shows in Folder. */
 export async function flattenStockFolders() {
   const root = await listChildren(null);
-  const apps = root.find((n) => n.kind === "folder" && n.name === "Apps");
-  if (apps) {
-    const kids = await listChildren(apps.id);
-    const db = await open();
-    await tx(db, ["nodes"], "readwrite", async (t) => {
-      const store = t.objectStore("nodes");
-      for (const k of kids) {
-        k.parentId = null;
-        k.updatedAt = Date.now();
-        await req(store.put(k));
-      }
-    });
-    db.close();
-    await purge(apps.id);
-  }
-  const again = await listChildren(null);
-  for (const n of again) {
+  for (const n of root) {
     if (n.kind === "folder" && DROP_ROOT.has(n.name)) await purge(n.id);
   }
   const stock = await listChildren(null);
   for (const n of stock) {
+    if (n.kind === "folder" && n.name === APPS_FOLDER_NAME) continue;
     if (n.kind === "folder" && EMPTY_STOCK.has(n.name) && !(await folderHasFiles(n.id))) {
       await purge(n.id);
     }

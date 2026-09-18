@@ -5,6 +5,9 @@ import * as registry from "@/lib/potion-apps";
 
 export type { PotionNode };
 export type StoreMode = "local" | "cloud";
+export const APPS_FOLDER_NAME = "Apps";
+
+const RESERVED_APP_NAMES = new Set(["apps", "documents", "photos", "potion"]);
 
 export type RestoreRecord = {
   id: string;
@@ -18,6 +21,12 @@ export type ConnectedApp = {
   name: string;
   folderId: string;
   files: number;
+};
+
+export type TreeEntry = {
+  node: PotionNode;
+  path: string;
+  parentPath: string;
 };
 
 const RESTORE_KEY = "potion-last-restore";
@@ -50,21 +59,52 @@ function b64ToBytes(b64: string) {
   return bytes;
 }
 
-async function namedFolder(parentId: string | null, name: string) {
-  const kids = await db.listChildren(parentId);
-  const found = kids.find((n) => n.kind === "folder" && n.name === name);
-  if (found) return found;
-  return db.mkdir(parentId, name);
+function asFile(name: string, mime: string | null, bytes: ArrayBuffer) {
+  return new File([bytes], name, { type: mime || "application/octet-stream" });
 }
 
 export async function ensurePotion(mode: StoreMode) {
   if (mode === "cloud") {
     await cloud.ensureCloud();
+    await nestConnectedApps(mode);
     return;
   }
   await db.ensureSeeded();
   await db.stripWelcome();
   await db.flattenStockFolders();
+  await nestConnectedApps(mode);
+}
+
+async function mkdirId(mode: StoreMode, parentId: string | null, name: string): Promise<string> {
+  if (mode === "cloud") {
+    const made = await cloud.mkdirCloud({ data: { parentId, name } });
+    return made.id;
+  }
+  const node = await db.mkdir(parentId, name);
+  return node.id;
+}
+
+export async function ensureAppsRoot(mode: StoreMode): Promise<string> {
+  const root = await listNodes(mode, null);
+  const found = root.find((n) => n.kind === "folder" && n.name === APPS_FOLDER_NAME);
+  if (found) return found.id;
+  return mkdirId(mode, null, APPS_FOLDER_NAME);
+}
+
+async function nestConnectedApps(mode: StoreMode) {
+  const appsId = await ensureAppsRoot(mode);
+  const names = new Set(registry.listAppNames().map((n) => n.toLowerCase()));
+  const root = await listNodes(mode, appsId);
+  const already = new Set(root.filter((n) => n.kind === "folder").map((n) => n.name.toLowerCase()));
+  const leftover = await listNodes(mode, null);
+  for (const n of leftover) {
+    if (n.kind !== "folder") continue;
+    if (n.id === appsId || n.name === APPS_FOLDER_NAME) continue;
+    if (!names.has(n.name.toLowerCase())) continue;
+    if (already.has(n.name.toLowerCase())) continue;
+    await moveNode(mode, n.id, appsId);
+    already.add(n.name.toLowerCase());
+  }
 }
 
 export async function listNodes(mode: StoreMode, parentId: string | null) {
@@ -83,6 +123,37 @@ export async function mkdir(mode: StoreMode, parentId: string | null, name: stri
   return db.mkdir(parentId, name);
 }
 
+export async function collectTree(
+  mode: StoreMode,
+  parentId: string | null = null,
+  prefix = "",
+): Promise<TreeEntry[]> {
+  const kids = await listNodes(mode, parentId);
+  const out: TreeEntry[] = [];
+  for (const k of kids) {
+    const path = prefix ? `${prefix}/${k.name}` : k.name;
+    if (k.kind === "folder") {
+      if (k.synced === false) continue;
+      out.push({ node: k, path, parentPath: prefix });
+      out.push(...(await collectTree(mode, k.id, path)));
+    } else {
+      out.push({ node: k, path, parentPath: prefix });
+    }
+  }
+  return out;
+}
+
+export async function ensureFolderPath(mode: StoreMode, parts: string[]): Promise<string | null> {
+  let parent: string | null = null;
+  for (const part of parts) {
+    if (!part) continue;
+    const kids = await listNodes(mode, parent);
+    const found = kids.find((n) => n.kind === "folder" && n.name === part);
+    parent = found ? found.id : await mkdirId(mode, parent, part);
+  }
+  return parent;
+}
+
 export async function putFiles(mode: StoreMode, parentId: string | null, files: File[]) {
   if (mode === "cloud") {
     for (const f of files) {
@@ -90,10 +161,20 @@ export async function putFiles(mode: StoreMode, parentId: string | null, files: 
         data: {
           parentId,
           name: f.name,
-          mime: f.type || "application/octet-stream",
+          mime: f.type || db.guessMime(f.name),
           content: await fileToB64(f),
         },
       });
+    }
+    try {
+      const crumbs = await pathOf("cloud", parentId);
+      const localParent = await ensureFolderPath(
+        "local",
+        crumbs.map((c) => c.name),
+      );
+      await db.putFiles(localParent, files);
+    } catch {
+      /* local cache is optional */
     }
     return;
   }
@@ -147,14 +228,28 @@ export async function getFile(mode: StoreMode, id: string) {
   return { name: node.name, mime: blob.mime, bytes: blob.bytes, size: node.size };
 }
 
+export async function putLocalFile(parentPath: string, name: string, mime: string | null, bytes: ArrayBuffer) {
+  const parentId = await ensureFolderPath(
+    "local",
+    parentPath.split("/").filter(Boolean),
+  );
+  await db.putFiles(parentId, [asFile(name, mime, bytes)]);
+}
+
+export async function putCloudFile(parentPath: string, name: string, mime: string | null, bytes: ArrayBuffer) {
+  const parentId = await ensureFolderPath(
+    "cloud",
+    parentPath.split("/").filter(Boolean),
+  );
+  await putFiles("cloud", parentId, [asFile(name, mime, bytes)]);
+}
+
 async function appLeaf(mode: StoreMode, app: string, leaf: string) {
-  if (mode === "cloud") {
-    const r = await cloud.appFolderCloud({ data: { app, leaf } });
-    return r.id;
-  }
-  const folder = await namedFolder(null, app);
-  const dest = await namedFolder(folder.id, leaf);
-  return dest.id;
+  const folderId = await ensureAppFolder(mode, app);
+  const kids = await listNodes(mode, folderId);
+  const found = kids.find((n) => n.kind === "folder" && n.name === leaf);
+  if (found) return found.id;
+  return mkdirId(mode, folderId, leaf);
 }
 
 export async function saveAppBackup(mode: StoreMode, app: string, payload: string) {
@@ -198,24 +293,26 @@ export function lastRestore(): RestoreRecord | null {
 }
 
 export async function ensureAppFolder(mode: StoreMode, name: string) {
-  const root = await listNodes(mode, null);
-  const found = root.find((n) => n.kind === "folder" && n.name === name);
+  const appsId = await ensureAppsRoot(mode);
+  const kids = await listNodes(mode, appsId);
+  const found = kids.find((n) => n.kind === "folder" && n.name === name);
   if (found) return found.id;
-  if (mode === "cloud") {
-    const made = await cloud.mkdirCloud({ data: { parentId: null, name } });
-    return made.id;
+  const leftover = (await listNodes(mode, null)).find((n) => n.kind === "folder" && n.name === name && n.id !== appsId);
+  if (leftover) {
+    await moveNode(mode, leftover.id, appsId);
+    return leftover.id;
   }
-  const folder = await namedFolder(null, name);
-  return folder.id;
+  return mkdirId(mode, appsId, name);
 }
 
 export async function connectedApps(mode: StoreMode): Promise<ConnectedApp[]> {
   await ensurePotion(mode);
   const names = registry.listAppNames();
-  const root = await listNodes(mode, null);
+  const appsId = await ensureAppsRoot(mode);
+  const kids = await listNodes(mode, appsId);
   const out: ConnectedApp[] = [];
   for (const name of names) {
-    const found = root.find((n) => n.kind === "folder" && n.name === name);
+    const found = kids.find((n) => n.kind === "folder" && n.name === name);
     let count = 0;
     if (found) {
       const nested = await listNodes(mode, found.id);
@@ -230,7 +327,11 @@ export async function connectedApps(mode: StoreMode): Promise<ConnectedApp[]> {
 }
 
 export async function addConnectedApp(mode: StoreMode, name: string) {
-  const added = registry.addAppName(name);
+  const trimmed = name.trim().replace(/\s+/g, " ");
+  if (RESERVED_APP_NAMES.has(trimmed.toLowerCase())) {
+    throw new Error("That name is reserved for Potion itself");
+  }
+  const added = registry.addAppName(trimmed);
   const folderId = await ensureAppFolder(mode, added);
   return { name: added, folderId };
 }

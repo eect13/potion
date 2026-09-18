@@ -94,18 +94,16 @@ export const ensureCloud = createServerFn({ method: "POST" })
       where user_id = ${context.userId} and parent_id is null and name = 'Apps'
         and kind = 'folder' and deleted_at is null
       limit 1`;
-    if (apps[0]) {
+    if (!apps[0]) {
+      const id = nid();
       await sql`
-        update potion_nodes set parent_id = null, updated_at = now()
-        where user_id = ${context.userId} and parent_id = ${apps[0].id} and deleted_at is null`;
-      await sql`
-        update potion_nodes set deleted_at = now(), updated_at = now()
-        where id = ${apps[0].id} and user_id = ${context.userId}`;
+        insert into potion_nodes (id, user_id, parent_id, name, kind, size)
+        values (${id}, ${context.userId}, ${null}, ${"Apps"}, 'folder', 0)`;
     }
     await sql`
       update potion_nodes set deleted_at = now(), updated_at = now()
       where user_id = ${context.userId} and parent_id is null and deleted_at is null
-        and kind = 'folder' and name in ('Documents', 'Photos', 'Apps')`;
+        and kind = 'folder' and name in ('Documents', 'Photos')`;
     return { ok: true as const };
   });
 

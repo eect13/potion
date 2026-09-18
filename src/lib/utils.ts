@@ -21,3 +21,21 @@ export function formatWhen(ts: number) {
     minute: "2-digit",
   });
 }
+
+export type FileKind = "image" | "video" | "audio" | "pdf" | "zip" | "file";
+
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".heif", ".bmp", ".avif"]);
+const VIDEO_EXT = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"]);
+const AUDIO_EXT = new Set([".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"]);
+const ZIP_EXT = new Set([".zip", ".rar", ".7z", ".tar", ".gz"]);
+
+export function fileKind(mime: string | null | undefined, name: string): FileKind {
+  const m = (mime || "").toLowerCase();
+  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+  if (m.startsWith("image/") || IMAGE_EXT.has(ext)) return "image";
+  if (m.startsWith("video/") || VIDEO_EXT.has(ext)) return "video";
+  if (m.startsWith("audio/") || AUDIO_EXT.has(ext)) return "audio";
+  if (m === "application/pdf" || ext === ".pdf") return "pdf";
+  if (m.includes("zip") || m.includes("compressed") || ZIP_EXT.has(ext)) return "zip";
+  return "file";
+}
