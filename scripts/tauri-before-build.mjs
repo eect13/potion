@@ -8,16 +8,19 @@
  * `npm run build` still exists for the website (Nitro + migrate). Desktop
  * must not run that: it would rename the Windows tab to `db:migrate` and
  * print a fake DATABASE_URL warning after the UI is already packed.
+ *
+ * Windows: never spawn the `vite` PATH shim. `with-app-env` uses spawn()
+ * without a shell, so `vite.cmd` is ENOENT. Call `node …/vite.js` instead.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STATIC = join(ROOT, ".vercel", "output", "static");
 const INDEX = join(STATIC, "index.html");
-const BIN = join(ROOT, "node_modules", ".bin");
+const VITE_JS = join(ROOT, "node_modules", "vite", "bin", "vite.js");
 const phase = process.argv[2] === "bundle" ? "bundle" : "frontend";
 
 function fail(msg) {
@@ -46,19 +49,22 @@ banner(
   "  Vite desktop bundle (not the website SSR build).\n",
 );
 
+if (!existsSync(VITE_JS)) {
+  fail("vite is not installed. Run npm install, then deploy.bat again.");
+}
+
 // vite.config.ts switches to the SPA/static outDir only when a TAURI_* env is set.
 // pack-android.mjs and plain `node scripts/tauri-before-build.mjs` must set one,
 // or Vite runs the Nitro website build and never writes static/index.html.
 const tauriEnv = {
   ...process.env,
-  PATH: `${BIN}${delimiter}${process.env.PATH || ""}`,
   TAURI_ENV_PLATFORM:
     process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM || process.env.TAURI_ENV_FAMILY || "desktop",
 };
 
 const vite = spawnSync(
   process.execPath,
-  [join(ROOT, "scripts", "with-app-env.mjs"), "vite", "build"],
+  [join(ROOT, "scripts", "with-app-env.mjs"), process.execPath, VITE_JS, "build"],
   { cwd: ROOT, stdio: "inherit", env: tauriEnv, windowsHide: true },
 );
 if ((vite.status ?? 1) !== 0) {

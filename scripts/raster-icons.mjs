@@ -9,53 +9,25 @@
  */
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { platform } from "node:os";
 import { spawnSync } from "node:child_process";
 import { chromium } from "playwright";
+import { CREAM, CREAM_RGB, INK, INK_RGB, MARK_CUTS, MARK_FLASK, inCream } from "./potion-mark-geom.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
 const ICONS = join(ROOT, "src-tauri", "icons");
-const WIN = platform() === "win32";
-const INK = "#0a0b0a";
-const CREAM = "#d7dbd4";
-const INK_RGB = [0x0a, 0x0b, 0x0a];
-const CREAM_RGB = [0xd7, 0xdb, 0xd4];
 const ICO_SIZES = [16, 24, 32, 48, 64, 256];
-
-const MARK_SVG = `
-<rect width="32" height="32" fill="${INK}"/>
-<g transform="translate(16 16)">
-  <path d="M-4.7-12.3h9.4c.7 0 1.2.5 1.2 1.15v1.55H-5.9v-1.55c0-.65.5-1.15 1.2-1.15z" fill="${CREAM}"/>
-  <rect x="-4.3" y="-9.6" width="8.6" height="1.85" rx="0.5" fill="${CREAM}"/>
-  <path d="M-2.45-7.75h4.9v3.15c2.55 1.2 6.15 3.45 6.15 8.85a8.6 8.6 0 1 1-17.2 0c0-5.4 3.6-7.65 6.15-8.85v-3.15z" fill="${CREAM}"/>
-  <path d="M-3.05-.35v9.15h1.95V5.25h1.55c2.7 0 4.25-1.4 4.25-3.45 0-2.05-1.45-2.15-3.95-2.15H-3.05zm1.95 1.65h1.7c1.35 0 2.15.4 2.15 1.35s-.8 1.45-2.15 1.45h-1.7V1.3z" fill="${INK}"/>
-</g>
-`;
 
 function drawHtml(size) {
   return `<!doctype html>
 <html><body style="margin:0;background:${INK}">
 <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32" shape-rendering="geometricPrecision">
-${MARK_SVG}
+  <rect width="32" height="32" fill="${INK}"/>
+  <g transform="translate(16 16)">
+    <g fill="${CREAM}">${MARK_FLASK}</g>
+    <g fill="${INK}">${MARK_CUTS}</g>
+  </g>
 </svg>
 </body></html>`;
-}
-
-function inFlask(x, y) {
-  if (x >= 11.3 && x <= 20.7 && y >= 3.7 && y <= 6.4) return true;
-  if (x >= 11.7 && x <= 20.3 && y >= 6.4 && y <= 8.25) return true;
-  if (x >= 13.55 && x <= 18.45 && y >= 8.25 && y <= 12.2) return true;
-  const dx = x - 16;
-  const dy = y - 20.25;
-  return dx * dx + dy * dy <= 8.6 * 8.6;
-}
-
-function inP(x, y) {
-  if (x >= 12.95 && x <= 14.9 && y >= 15.65 && y <= 24.8) return true;
-  const inBowl = x >= 12.95 && x <= 17.2 && y >= 15.65 && y <= 19.1;
-  if (!inBowl) return false;
-  const inHole = x >= 14.9 && x <= 16.85 && y >= 17.3 && y <= 19.0;
-  return !inHole;
 }
 
 /** Same mark as the SVG, as RGBA — used for the BMP .ico. */
@@ -65,8 +37,7 @@ function rgbaAt(size) {
     for (let px = 0; px < size; px++) {
       const x = ((px + 0.5) / size) * 32;
       const y = ((py + 0.5) / size) * 32;
-      const cream = inFlask(x, y) && !inP(x, y);
-      const rgb = cream ? CREAM_RGB : INK_RGB;
+      const rgb = inCream(x, y) ? CREAM_RGB : INK_RGB;
       const i = (py * size + px) * 4;
       rgba[i] = rgb[0];
       rgba[i + 1] = rgb[1];
@@ -137,22 +108,15 @@ async function pngAt(size) {
 }
 
 mkdirSync(ICONS, { recursive: true });
-const png32 = await pngAt(32);
-const png64 = await pngAt(64);
-const png128 = await pngAt(128);
-const png256 = await pngAt(256);
-const png512 = await pngAt(512);
-const png1024 = await pngAt(1024);
+writeFileSync(join(ICONS, "icon-source.png"), await pngAt(1024));
+writeFileSync(join(ICONS, "icon.png"), await pngAt(512));
+writeFileSync(join(ICONS, "128x128@2x.png"), await pngAt(256));
+writeFileSync(join(ICONS, "128x128.png"), await pngAt(128));
+writeFileSync(join(ICONS, "64x64.png"), await pngAt(64));
+writeFileSync(join(ICONS, "32x32.png"), await pngAt(32));
 const png192 = await pngAt(192);
 const png180 = await pngAt(180);
 await browser.close();
-
-writeFileSync(join(ICONS, "32x32.png"), png32);
-writeFileSync(join(ICONS, "64x64.png"), png64);
-writeFileSync(join(ICONS, "128x128.png"), png128);
-writeFileSync(join(ICONS, "128x128@2x.png"), png256);
-writeFileSync(join(ICONS, "icon.png"), png512);
-writeFileSync(join(ICONS, "icon-source.png"), png1024);
 
 const ico = icoFromBmp(ICO_SIZES.map((size) => ({ size, buf: bmp32(size, rgbaAt(size)) })));
 const firstOff = ico.readUInt32LE(18);

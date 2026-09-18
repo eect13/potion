@@ -42,10 +42,12 @@ export function PotionApp() {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("list");
   const fileRef = useRef<HTMLInputElement>(null);
+  const toastTimer = useRef(0);
 
   const ping = (msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(""), 2400);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2400);
   };
 
   function toggleTheme() {
@@ -210,7 +212,9 @@ export function PotionApp() {
 
   async function shareItem(node: PotionNode) {
     const share = await api.shareNode(mode, node.id);
-    const url = `${window.location.origin}/s/${share.token}`;
+    const origin =
+      mode === "cloud" ? "https://potion-eect13.vercel.app" : window.location.origin;
+    const url = `${origin}/s/${share.token}`;
     setMenuFor(null);
     setSheet(
       <ShareSheet
@@ -441,8 +445,10 @@ export function PotionApp() {
             className="space-y-4"
             onSubmit={(e) => {
               e.preventDefault();
+              const next = folderName.trim();
+              if (!next) return;
               void (async () => {
-                await api.mkdir(mode, parentId, folderName);
+                await api.mkdir(mode, parentId, next);
                 setFolderName("");
                 setMkdirOpen(false);
                 await refresh();
@@ -461,7 +467,7 @@ export function PotionApp() {
               <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={() => setMkdirOpen(false)}>
                 Cancel
               </button>
-              <button type="submit" className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">
+              <button type="submit" disabled={!folderName.trim()} className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60">
                 Create
               </button>
             </div>
