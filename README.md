@@ -4,7 +4,7 @@ A folder for your apps. Login optional. Sync only if you want it.
 
 ## Use it
 
-- **Web** — open the Vercel URL
+- **Web** — [potion-eect13.vercel.app](https://potion-eect13.vercel.app)
 - **PC** — Chrome or Edge → Install app. Potion sits next to your other apps.
 - **Phone** — open the same URL → Add to Home Screen. That is the Android install.
 
