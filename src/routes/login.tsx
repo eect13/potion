@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { PotionMark } from "@/components/potion-mark";
+import { APP_VERSION_LABEL } from "@/lib/version";
 import { GROK_PROVIDERS, authClient, authEnabled, signIn } from "@/lib/auth/client";
 
 export const Route = createFileRoute("/login")({ component: Login });
@@ -47,6 +48,7 @@ function Login() {
         <PotionMark className="size-12" />
         <div>
           <h1 className="font-serif text-3xl italic">Optional</h1>
+          <p className="mt-1 text-[11px] text-muted">{APP_VERSION_LABEL}</p>
           <p className="mt-2 text-sm text-muted">
             Potion works with no account. Sign in only if you want the same folder on another phone or
             computer.

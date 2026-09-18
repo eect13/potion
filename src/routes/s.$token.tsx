@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PotionMark } from "@/components/potion-mark";
+import { APP_VERSION_LABEL } from "@/lib/version";
 import * as db from "@/lib/potion-db";
 import { formatBytes } from "@/lib/utils";
 
@@ -57,7 +58,7 @@ function SharePage() {
     <main className="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
       <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6">
         <PotionMark className="size-12" />
-        <p className="mt-4 font-mono text-[10px] tracking-[0.16em] text-muted uppercase">Shared with Potion</p>
+        <p className="mt-4 font-mono text-[10px] tracking-[0.16em] text-muted uppercase">Shared with Potion · {APP_VERSION_LABEL}</p>
         <h1 className="mt-2 font-serif text-3xl italic">
           {state === "gone" ? "Link gone" : state === "load" ? "…" : name}
         </h1>

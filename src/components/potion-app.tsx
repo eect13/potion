@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link } from "@tanstack/react-router";
 import { Folder, FileText, Upload, Save, Trash2, Blocks, Copy, RotateCcw, Cloud, Sun, Moon, PanelLeftClose, PanelLeft, LogIn, Share2, CloudOff, MoreHorizontal, FolderInput, Link2, Play, Pause, Square, Plus, LayoutList, LayoutGrid } from "lucide-react";
 import { PotionMark } from "@/components/potion-mark";
+import { APP_VERSION_LABEL } from "@/lib/version";
 import { readTheme, writeTheme, type Theme } from "@/lib/theme";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
@@ -255,7 +256,7 @@ export function PotionApp() {
           collapsed ? "w-16 px-2 py-4" : "w-56 px-4 py-5",
         )}
       >
-        <Brand mode={mode} collapsed={collapsed} />
+        <Brand collapsed={collapsed} />
         <div className="mt-6 flex-1">
           <Nav view={view} setView={setView} collapsed={collapsed} />
         </div>
@@ -281,7 +282,7 @@ export function PotionApp() {
 
       <div className="relative z-10 flex min-w-0 flex-1 flex-col pb-20 md:pb-0">
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 md:hidden">
-          <Brand mode={mode} collapsed={false} />
+          <Brand collapsed={false} />
           <div className="flex items-center gap-1">
             <ThemeToggle theme={theme} onToggle={toggleTheme} collapsed />
             <AuthSlot isPending={isPending} hasUser={!!user} collapsed={false} />
@@ -486,7 +487,7 @@ export function PotionApp() {
   );
 }
 
-function Brand({ mode, collapsed }: { mode: StoreMode; collapsed: boolean }) {
+function Brand({ collapsed }: { collapsed: boolean }) {
   return (
     <div className={cn("flex items-center gap-3", collapsed && "justify-center")}>
       <PotionMark className="size-9" />
@@ -495,7 +496,7 @@ function Brand({ mode, collapsed }: { mode: StoreMode; collapsed: boolean }) {
       ) : (
         <div>
           <p className="text-sm font-medium leading-tight">Potion</p>
-          <p className="text-xs text-muted">{mode === "cloud" ? "Account folder" : "This device"}</p>
+          <p className="text-[11px] text-muted">{APP_VERSION_LABEL}</p>
         </div>
       )}
     </div>

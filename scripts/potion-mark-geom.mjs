@@ -6,7 +6,7 @@ export const LOGO_HREF = "/potion-logo.png";
 export const LOGO_W = 268;
 export const LOGO_H = 301;
 /** Padding around the flask inside the 32×32 tile (contain + center). */
-export const LOGO_PAD = 0.07;
+export const LOGO_PAD = 0.14;
 
 export function logoPlacement(size = 32, pad = LOGO_PAD) {
   const avail = size * (1 - pad * 2);
