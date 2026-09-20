@@ -9,7 +9,6 @@ export const mkdirCloud = unavailable;
 export const putCloud = unavailable;
 export const trashCloud = unavailable;
 export const getCloud = unavailable;
-export const appFolderCloud = unavailable;
 export const copyCloud = unavailable;
 export const moveCloud = unavailable;
 export const syncCloud = unavailable;
