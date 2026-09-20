@@ -4,19 +4,13 @@ import { PotionMark } from "@/components/potion-mark";
 import { APP_VERSION_LABEL } from "@/lib/version";
 import * as db from "@/lib/potion-db";
 import * as cloud from "@/lib/potion-cloud";
+import { pullSharedFile } from "@/lib/potion-api";
 import { formatBytes } from "@/lib/utils";
 
 export const Route = createFileRoute("/s/$token")({ component: SharePage });
 
-function bytesFromB64(b64: string) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function saveBlob(bytes: BlobPart, name: string, mime: string | null) {
-  const url = URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
+function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
@@ -79,14 +73,14 @@ function SharePage() {
   async function download(id = nodeId, fileName = name) {
     if (!id) return;
     if (!remote) {
-      const blob = await db.currentBlob(id);
-      if (!blob) return;
-      saveBlob(blob.bytes, fileName, blob.mime);
+      const file = await db.currentFile(id);
+      if (!file) return;
+      saveBlob(file.blob, fileName);
       return;
     }
-    const file = await cloud.getSharedFileCloud({ data: { token, id } });
+    const file = await pullSharedFile(token, id);
     if (!file) return;
-    saveBlob(bytesFromB64(file.content), file.name, file.mime);
+    saveBlob(file.blob, file.name);
   }
 
   return (

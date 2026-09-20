@@ -14,8 +14,6 @@ export type SyncState = {
   skipped: number;
 };
 
-const ACCOUNT_MAX = 3 * 1024 * 1024;
-
 type Job = {
   action: "index" | "upload" | "download";
   label: string;
@@ -83,8 +81,8 @@ function jobsFromTree(tree: TreeEntry[], action: Job["action"], source: StoreMod
 }
 
 function sameFile(a: TreeEntry, b: TreeEntry) {
-  if (a.node.hash && b.node.hash) return a.node.hash === b.node.hash;
-  return a.node.size === b.node.size;
+  if (!a.node.hash || !b.node.hash) return false;
+  return a.node.hash === b.node.hash;
 }
 
 async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
@@ -114,7 +112,7 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
     if (uploading.has(path)) continue;
     const local = localFiles.get(path);
     if (local && sameFile(local, remote)) continue;
-    if (!local || local.node.size !== remote.node.size) {
+    if (!local || local.node.hash !== remote.node.hash) {
       out.push(...jobsFromTree([remote], "download", "cloud"));
     }
   }
@@ -123,16 +121,13 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
 
 async function runJob(job: Job) {
   if (job.action === "index") return;
-  if (job.action === "upload" && job.size > ACCOUNT_MAX) {
-    throw new Error("File too large (3 MB).");
-  }
   const file = await api.getFile(job.source, job.nodeId);
   if (!file) throw new Error(`Missing ${job.name}`);
   if (job.action === "upload") {
-    await api.putCloudFile(job.parentPath, file.name, file.mime, file.bytes);
+    await api.putCloudFile(job.parentPath, file.name, file.mime, file.blob);
     return;
   }
-  await api.putLocalFile(job.parentPath, file.name, file.mime, file.bytes);
+  await api.putLocalFile(job.parentPath, file.name, file.mime, file.blob);
 }
 
 async function pump() {
@@ -159,13 +154,10 @@ async function pump() {
           await runJob(job);
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Sync failed";
-          const large = /too large/i.test(msg);
           state = {
             ...state,
             skipped: state.skipped + 1,
-            error: large
-              ? `${job.name} is too large for your account and stays on this device`
-              : msg,
+            error: msg,
           };
           emit();
         }

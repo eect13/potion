@@ -57,6 +57,8 @@ import {
   subscribeSync,
   type SyncState,
 } from "@/lib/potion-sync";
+import { subscribePotion } from "@/lib/potion-watch";
+import type { PotionComment, PotionVersion } from "@/lib/potion-api";
 
 type View = "folder" | "trash" | "sync";
 type Layout = "list" | "grid";
@@ -99,6 +101,8 @@ export function PotionApp() {
   const [used, setUsed] = useState(0);
   const [renameFor, setRenameFor] = useState<PotionNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [busyNote, setBusyNote] = useState("");
+  const [liveAt, setLiveAt] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef(0);
   const lastClick = useRef<string | null>(null);
@@ -145,7 +149,7 @@ export function PotionApp() {
     }
   }
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { quiet?: boolean }) => {
     if (isPending) return;
     await api.ensurePotion(mode);
     if (view === "trash") {
@@ -157,8 +161,10 @@ export function PotionApp() {
     }
     const path = await api.pathOf(mode, parentId);
     setCrumbs(path);
-    setSelected([]);
-    setMenuFor(null);
+    if (!opts?.quiet) {
+      setSelected([]);
+      setMenuFor(null);
+    }
     try {
       setUsed(await api.usedBytes(mode));
     } catch {
@@ -170,6 +176,20 @@ export function PotionApp() {
   useEffect(() => {
     void refresh().catch(() => setReady(true));
   }, [refresh]);
+
+  useEffect(() => {
+    const unsub = subscribePotion(() => {
+      setLiveAt(Date.now());
+      void refresh({ quiet: true });
+    });
+    const poll = window.setInterval(() => {
+      if (mode === "cloud") void refresh({ quiet: true });
+    }, 8000);
+    return () => {
+      unsub();
+      window.clearInterval(poll);
+    };
+  }, [refresh, mode]);
 
   useEffect(() => {
     const wait = query.trim() ? 200 : 0;
@@ -198,23 +218,28 @@ export function PotionApp() {
   async function upload(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
     setBusy(true);
+    setBusyNote("Saving");
     try {
-      await api.putFiles(mode, parentId, Array.from(files));
+      await api.putFiles(mode, parentId, Array.from(files), (p) => {
+        const pct = p.total ? Math.round((p.done / p.total) * 100) : 100;
+        setBusyNote(p.total > 1 ? `Saving ${pct}% · ${p.name}` : `Saving ${pct}%`);
+      });
       ping(`Added ${files.length} file${files.length === 1 ? "" : "s"}`);
       await refresh();
       maybeAutoSync(mode);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not add files";
-      ping(/too large/i.test(msg) ? "One file is over 3 MB for your account" : msg);
+      ping(msg);
     } finally {
       setBusy(false);
+      setBusyNote("");
     }
   }
 
   async function download(node: PotionNode) {
     const file = await api.getFile(mode, node.id);
     if (!file) return;
-    const url = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "application/octet-stream" }));
+    const url = URL.createObjectURL(file.blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = file.name;
@@ -315,6 +340,53 @@ export function PotionApp() {
     setMenuFor(null);
     setRenameFor(node);
     setRenameValue(node.name);
+  }
+
+  async function openHistory(node: PotionNode) {
+    setMenuFor(null);
+    try {
+      const versions = await api.listVersions(mode, node.id);
+      setSheet(
+        <HistorySheet
+          name={node.name}
+          versions={versions}
+          onRestore={async (version) => {
+            try {
+              await api.revertNode(mode, node.id, version);
+              ping(`Restored version ${version}`);
+              setSheet(null);
+              await refresh();
+            } catch (err) {
+              ping(err instanceof Error ? err.message : "Could not restore version");
+            }
+          }}
+          onClose={() => setSheet(null)}
+        />,
+      );
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not load history");
+    }
+  }
+
+  async function openComments(node: PotionNode) {
+    setMenuFor(null);
+    try {
+      const rows = await api.listComments(mode, node.id);
+      setSheet(
+        <CommentsSheet
+          name={node.name}
+          comments={rows}
+          onPost={async (body) => {
+            const row = await api.addComment(mode, node.id, body);
+            ping("Comment added");
+            return row;
+          }}
+          onClose={() => setSheet(null)}
+        />,
+      );
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not load comments");
+    }
   }
 
   async function commitRename() {
@@ -489,18 +561,19 @@ export function PotionApp() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <LayoutToggle layout={layout} onChange={setLayoutMode} />
+                <LivePill at={liveAt} />
                 <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={() => setMkdirOpen(true)}>
                   New folder
                 </button>
                 <button
                   type="button"
-                  title="Photos, videos, PDFs, zips — any file"
+                  title="Photos, videos, PDFs, zips — any size"
                   className="inline-flex h-11 items-center gap-2 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60"
                   disabled={busy}
                   onClick={() => fileRef.current?.click()}
                 >
                   <Upload className="size-4" strokeWidth={1.75} />
-                  {busy ? "Saving" : "Add files"}
+                  {busy ? busyNote || "Saving" : "Add files"}
                 </button>
                 <input
                   ref={fileRef}
@@ -603,6 +676,8 @@ export function PotionApp() {
               onMove={(n) => void moveItem(n)}
               onShare={(n) => void shareItem(n)}
               onSync={(n) => void toggleSync(n)}
+              onHistory={(n) => void openHistory(n)}
+              onComments={(n) => void openComments(n)}
               onTrash={(n) => void deleteItem(n)}
               onRename={openRename}
               onRestore={async (n) => {
@@ -884,7 +959,7 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
       try {
         const file = await api.getFile(mode, node.id);
         if (!file || gone) return;
-        objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "image/*" }));
+        objectUrl = URL.createObjectURL(file.blob);
         if (gone) {
           URL.revokeObjectURL(objectUrl);
           return;
@@ -931,7 +1006,7 @@ function PreviewSheet({
     void (async () => {
       const file = await api.getFile(mode, node.id);
       if (!file || gone) return;
-      objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "application/octet-stream" }));
+      objectUrl = URL.createObjectURL(file.blob);
       setUrl(objectUrl);
     })();
     return () => {
@@ -980,6 +1055,8 @@ function FolderGrid({
   onMove,
   onShare,
   onSync,
+  onHistory,
+  onComments,
   onTrash,
   onRename,
   onRestore,
@@ -1004,6 +1081,8 @@ function FolderGrid({
   onMove: (n: PotionNode) => void;
   onShare: (n: PotionNode) => void;
   onSync: (n: PotionNode) => void;
+  onHistory: (n: PotionNode) => void;
+  onComments: (n: PotionNode) => void;
   onTrash: (n: PotionNode) => void;
   onRename: (n: PotionNode) => void;
   onRestore: (n: PotionNode) => void;
@@ -1036,7 +1115,7 @@ function FolderGrid({
   if (items.length === 0) {
     return (
       <p className={cn("py-16 text-center text-muted", over && "rounded-xl outline-dashed outline-1 outline-accent")}>
-        {view === "trash" ? "Trash is empty." : "Empty. Drop photos, videos, PDFs, zips — any file."}
+        {view === "trash" ? "Trash is empty." : "Empty. Drop photos, videos, PDFs, zips — any size."}
       </p>
     );
   }
@@ -1108,7 +1187,7 @@ function FolderGrid({
                       <p className="truncate text-sm font-medium">{item.name}</p>
                       {layout === "grid" ? (
                         <p className="text-xs text-faint">
-                          {item.kind === "folder" ? (item.synced === false ? "Not syncing" : "Syncing") : `${kindLabel(kind)} · ${formatBytes(item.size)}`}
+                          {item.kind === "folder" ? (item.synced === false ? "Not syncing" : "Syncing") : `${kindLabel(kind)} · ${formatBytes(item.size)}${item.version > 1 ? ` · v${item.version}` : ""}`}
                         </p>
                       ) : null}
                     </span>
@@ -1156,6 +1235,8 @@ function FolderGrid({
               onMove={onMove}
               onShare={onShare}
               onSync={onSync}
+              onHistory={onHistory}
+              onComments={onComments}
               onTrash={onTrash}
               onRename={onRename}
               onRestore={onRestore}
@@ -1178,6 +1259,8 @@ function ActionMenu({
   onMove,
   onShare,
   onSync,
+  onHistory,
+  onComments,
   onTrash,
   onRename,
   onRestore,
@@ -1192,6 +1275,8 @@ function ActionMenu({
   onMove: (n: PotionNode) => void;
   onShare: (n: PotionNode) => void;
   onSync: (n: PotionNode) => void;
+  onHistory: (n: PotionNode) => void;
+  onComments: (n: PotionNode) => void;
   onTrash: (n: PotionNode) => void;
   onRename: (n: PotionNode) => void;
   onRestore: (n: PotionNode) => void;
@@ -1202,7 +1287,7 @@ function ActionMenu({
     const r = anchor.getBoundingClientRect();
     const width = 192;
     const left = Math.min(Math.max(8, r.right - width), window.innerWidth - width - 8);
-    const top = Math.min(r.bottom + 4, window.innerHeight - 320);
+    const top = Math.min(r.bottom + 4, window.innerHeight - 420);
     setPos({ top, left });
   }, [anchor]);
   return (
@@ -1219,6 +1304,8 @@ function ActionMenu({
           <MenuRow label="Make a copy" onClick={() => onCopy(item)} />
           <MenuRow label="Move" onClick={() => onMove(item)} />
           <MenuRow label="Share" onClick={() => onShare(item)} />
+          {item.kind === "file" ? <MenuRow label="Version history" onClick={() => onHistory(item)} /> : null}
+          <MenuRow label="Comments" onClick={() => onComments(item)} />
           {item.kind === "folder" ? (
             <MenuRow label={item.synced === false ? "Sync folder" : "Don't sync"} onClick={() => onSync(item)} />
           ) : null}
@@ -1241,6 +1328,120 @@ function MenuRow({ label, onClick, danger }: { label: string; onClick: () => voi
     >
       {label}
     </button>
+  );
+}
+
+function LivePill({ at }: { at: number }) {
+  return (
+    <span title={at ? `Updated ${formatWhen(at)}` : "This folder refreshes as it changes"} className="inline-flex h-11 items-center gap-2 rounded-full border border-border px-3 text-xs text-muted">
+      <span className="size-1.5 rounded-full bg-accent" />
+      Live
+    </span>
+  );
+}
+
+function HistorySheet({
+  name,
+  versions,
+  onRestore,
+  onClose,
+}: {
+  name: string;
+  versions: PotionVersion[];
+  onRestore: (version: number) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <h3 className="font-serif text-2xl italic">Version history</h3>
+      <p className="text-sm text-muted">{name}. Restore writes a new current version. The last 20 saves stay on disk.</p>
+      <ul className="max-h-64 space-y-1 overflow-auto">
+        {versions.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No other versions yet.</li> : null}
+        {versions.map((v) => (
+          <li key={v.version} className="flex items-center justify-between gap-3 rounded-lg px-3 py-2">
+            <span className="min-w-0">
+              <p className="text-sm text-foreground">Version {v.version}{v.current ? " · current" : ""}</p>
+              <p className="text-xs text-faint">
+                {formatBytes(v.size)}
+                {v.updatedAt ? ` · ${formatWhen(v.updatedAt)}` : ""}
+              </p>
+            </span>
+            {v.current ? null : (
+              <button type="button" className="h-11 rounded-full border border-border px-3 text-sm" onClick={() => onRestore(v.version)}>
+                Restore
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="flex justify-end">
+        <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CommentsSheet({
+  name,
+  comments,
+  onPost,
+  onClose,
+}: {
+  name: string;
+  comments: PotionComment[];
+  onPost: (body: string) => Promise<PotionComment>;
+  onClose: () => void;
+}) {
+  const [rows, setRows] = useState(comments);
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="space-y-4">
+      <h3 className="font-serif text-2xl italic">Comments</h3>
+      <p className="text-sm text-muted">{name}</p>
+      <ul className="max-h-56 space-y-2 overflow-auto">
+        {rows.length === 0 ? <li className="text-sm text-muted">No comments yet.</li> : null}
+        {rows.map((c) => (
+          <li key={c.id} className="rounded-lg bg-elevated px-3 py-2">
+            <p className="text-sm text-foreground">{c.body}</p>
+            <p className="mt-1 text-xs text-faint">{formatWhen(c.createdAt)}</p>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const next = body.trim();
+          if (!next) return;
+          setBusy(true);
+          void onPost(next)
+            .then((row) => {
+              setRows((cur) => [...cur, row]);
+              setBody("");
+            })
+            .finally(() => setBusy(false));
+        }}
+      >
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value.slice(0, 2000))}
+          placeholder="Write a comment"
+          rows={3}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+        />
+        <div className="flex justify-end gap-2">
+          <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
+            Done
+          </button>
+          <button type="submit" disabled={busy || !body.trim()} className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60">
+            Post
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -1367,7 +1568,10 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
             A folder marked <span className="text-foreground">Syncing</span> is included when you tap Start. Don’t sync skips it.
           </li>
           <li>
-            Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Files over 3 MB stay here.
+            Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Any size, including 1 GB.
+          </li>
+          <li>
+            Version history keeps the last 20 saves. Comments sit on the file. Live watches this folder in other Potion windows.
           </li>
         </ol>
         <p className="flex items-start gap-2 pt-1">

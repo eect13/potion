@@ -78,7 +78,30 @@ try {
   check(!/\bbox\b/i.test(sync), "no box copy on sync");
   check(!/locker/i.test(sync), "no locker copy on sync");
   check(/Sign in when you want/.test(sync), "sign-in copy is name-neutral");
-  check(/3 MB/.test(sync), "3 MB account cap shown");
+  check(!/3 MB/.test(sync), "3 MB account cap gone");
+  check(/Any size, including 1 GB/.test(sync), "no size cap copy");
+  check(/Version history/.test(sync), "version history mentioned");
+  check(/Comments sit on the file/.test(sync), "comments mentioned");
+  check(/Live watches/.test(sync), "live watch mentioned");
+
+  await nav("Folder");
+  check(await page.getByText("Live", { exact: true }).count(), "live pill on folder");
+
+  await page.getByPlaceholder("Search Potion").fill("");
+  await page.locator("article").filter({ hasText: renamed }).waitFor();
+  await page.locator("article").filter({ hasText: renamed }).getByTitle("Actions").click();
+  await page.locator("#potion-action-menu").getByRole("button", { name: "Comments" }).click();
+  await page.getByPlaceholder("Write a comment").fill("looks good");
+  await page.getByRole("button", { name: "Post" }).click();
+  await page.getByText("looks good").waitFor();
+  check(true, "posted a comment");
+  await page.getByRole("button", { name: "Done" }).click();
+
+  await page.locator("article").filter({ hasText: renamed }).getByTitle("Actions").click();
+  await page.locator("#potion-action-menu").getByRole("button", { name: "Version history" }).click();
+  await page.getByText("Version 1").waitFor();
+  check(true, "version history lists current save");
+  await page.getByRole("button", { name: "Done" }).click();
 } catch (err) {
   fails.push(err instanceof Error ? err.message : String(err));
 } finally {

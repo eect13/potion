@@ -1,5 +1,8 @@
+import { copyLocalBlob, deleteLocalBlobs, fingerprint, listLocalVersions, readLocalBlob, writeLocalBlob } from "@/lib/potion-blob";
+import { notifyPotion } from "@/lib/potion-watch";
+
 const DB_NAME = "potion-drive";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export type Kind = "file" | "folder";
 
@@ -34,6 +37,20 @@ export type PotionShare = {
   createdAt: number;
 };
 
+export type PotionComment = {
+  id: string;
+  nodeId: string;
+  body: string;
+  createdAt: number;
+};
+
+export type PotionVersion = {
+  version: number;
+  size: number;
+  updatedAt: number;
+  current: boolean;
+};
+
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -53,6 +70,10 @@ function open(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains("meta")) {
         db.createObjectStore("meta", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("comments")) {
+        const c = db.createObjectStore("comments", { keyPath: "id" });
+        c.createIndex("node", "nodeId");
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -82,11 +103,6 @@ function req<T>(r: IDBRequest<T>): Promise<T> {
 
 function nid() {
   return crypto.randomUUID();
-}
-
-async function sha256(buf: ArrayBuffer) {
-  const d = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function guessMime(name: string) {
@@ -156,32 +172,6 @@ function folder(parentId: string | null, name: string, now: number): PotionNode 
   };
 }
 
-async function fileNode(
-  parentId: string | null,
-  name: string,
-  bytes: ArrayBuffer,
-  mime: string,
-  now: number,
-) {
-  const id = nid();
-  const node: PotionNode = {
-    id,
-    parentId,
-    name,
-    kind: "file",
-    mime,
-    size: bytes.byteLength,
-    hash: await sha256(bytes),
-    version: 1,
-    createdAt: now,
-    updatedAt: now,
-    deletedAt: null,
-    synced: true,
-  };
-  const blob: PotionBlob = { id: nid(), nodeId: id, version: 1, mime, bytes };
-  return { node, blob };
-}
-
 export async function listChildren(parentId: string | null, trash = false): Promise<PotionNode[]> {
   const db = await open();
   const all = await tx(db, ["nodes"], "readonly", (t) => req(t.objectStore("nodes").getAll()));
@@ -221,47 +211,53 @@ export async function mkdir(parentId: string | null, name: string) {
   const node = folder(parentId, name.trim() || "Untitled", Date.now());
   await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(node)));
   db.close();
+  notifyPotion("mkdir");
   return node;
 }
 
 export async function putFiles(parentId: string | null, files: File[]) {
-  const db = await open();
   const now = Date.now();
   const existing = await listChildren(parentId);
   const byName = new Map(existing.filter((n) => n.kind === "file").map((n) => [n.name, n]));
   for (const f of files) {
-    const bytes = await f.arrayBuffer();
     const mime = f.type || guessMime(f.name);
+    const hash = await fingerprint(f);
     const found = byName.get(f.name);
     if (found) {
       const nextVer = found.version + 1;
-      found.size = bytes.byteLength;
+      found.size = f.size;
       found.mime = mime;
-      found.hash = await sha256(bytes);
+      found.hash = hash;
       found.version = nextVer;
       found.updatedAt = now;
-      await tx(db, ["nodes", "blobs"], "readwrite", async (t) => {
-        await req(t.objectStore("nodes").put(found));
-        await req(
-          t.objectStore("blobs").put({
-            id: nid(),
-            nodeId: found.id,
-            version: nextVer,
-            mime,
-            bytes,
-          }),
-        );
-      });
+      const db = await open();
+      await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(found)));
+      db.close();
+      await writeLocalBlob(found.id, nextVer, f);
     } else {
-      const made = await fileNode(parentId, f.name, bytes, mime, now);
-      await tx(db, ["nodes", "blobs"], "readwrite", async (t) => {
-        await req(t.objectStore("nodes").put(made.node));
-        await req(t.objectStore("blobs").put(made.blob));
-      });
-      byName.set(f.name, made.node);
+      const id = nid();
+      const node: PotionNode = {
+        id,
+        parentId,
+        name: f.name,
+        kind: "file",
+        mime,
+        size: f.size,
+        hash,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        synced: true,
+      };
+      const db = await open();
+      await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(node)));
+      db.close();
+      await writeLocalBlob(id, 1, f);
+      byName.set(f.name, node);
     }
   }
-  db.close();
+  notifyPotion("add");
 }
 
 export async function rename(id: string, name: string) {
@@ -276,6 +272,7 @@ export async function rename(id: string, name: string) {
     return node;
   });
   db.close();
+  notifyPotion("rename");
   return n;
 }
 
@@ -328,7 +325,6 @@ export async function copyNode(id: string, destParentId: string | null) {
     for (const k of kids) await copyNode(k.id, made.id);
     return made;
   }
-  const blob = await currentBlob(id);
   const newId = nid();
   const copy: PotionNode = {
     ...node,
@@ -342,21 +338,10 @@ export async function copyNode(id: string, destParentId: string | null) {
     synced: node.synced !== false,
   };
   const db = await open();
-  await tx(db, ["nodes", "blobs"], "readwrite", async (t) => {
-    await req(t.objectStore("nodes").put(copy));
-    if (blob) {
-      await req(
-        t.objectStore("blobs").put({
-          id: nid(),
-          nodeId: newId,
-          version: 1,
-          mime: blob.mime,
-          bytes: blob.bytes,
-        }),
-      );
-    }
-  });
+  await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(copy)));
   db.close();
+  await copyLocalBlob(node.id, node.version, newId, 1);
+  notifyPotion("copy");
   return copy;
 }
 
@@ -374,6 +359,7 @@ export async function moveNode(id: string, destParentId: string | null) {
   const db = await open();
   await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(node)));
   db.close();
+  notifyPotion("move");
   return node;
 }
 
@@ -385,6 +371,7 @@ export async function setSynced(id: string, synced: boolean) {
   const db = await open();
   await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(node)));
   db.close();
+  notifyPotion("sync");
   return node;
 }
 
@@ -426,6 +413,7 @@ export async function trash(id: string) {
     walk(id);
   });
   db.close();
+  notifyPotion("trash");
 }
 
 export async function restore(id: string) {
@@ -447,16 +435,18 @@ export async function restore(id: string) {
     walk(id);
   });
   db.close();
+  notifyPotion("restore");
 }
 
 export async function purge(id: string) {
+  const ids: string[] = [];
   const db = await open();
-  await tx(db, ["nodes", "blobs", "shares"], "readwrite", async (t) => {
+  await tx(db, ["nodes", "blobs", "shares", "comments"], "readwrite", async (t) => {
     const nodes = t.objectStore("nodes");
     const blobs = t.objectStore("blobs");
     const shares = t.objectStore("shares");
+    const comments = t.objectStore("comments");
     const all = await req(nodes.getAll());
-    const ids: string[] = [];
     const collect = (nid: string) => {
       ids.push(nid);
       all.filter((x) => x.parentId === nid).forEach((c) => collect(c.id));
@@ -464,13 +454,17 @@ export async function purge(id: string) {
     collect(id);
     const blobAll = await req(blobs.getAll());
     const shareAll = await req(shares.getAll());
+    const commentAll = await req(comments.getAll());
     for (const nid of ids) {
       await req(nodes.delete(nid));
       for (const b of blobAll.filter((x) => x.nodeId === nid)) await req(blobs.delete(b.id));
       for (const s of shareAll.filter((x) => x.nodeId === nid)) await req(shares.delete(s.token));
+      for (const c of commentAll.filter((x) => x.nodeId === nid)) await req(comments.delete(c.id));
     }
   });
   db.close();
+  for (const nid of ids) await deleteLocalBlobs(nid);
+  notifyPotion("purge");
 }
 
 export async function emptyTrash() {
@@ -495,12 +489,68 @@ export async function usedBytes() {
 }
 
 export async function currentBlob(nodeId: string): Promise<PotionBlob | undefined> {
-  const node = await getNode(nodeId);
-  if (!node) return;
   const db = await open();
   const blobs = await tx(db, ["blobs"], "readonly", (t) => req(t.objectStore("blobs").index("node").getAll(nodeId)));
   db.close();
   return blobs.sort((a, b) => b.version - a.version)[0];
+}
+
+export async function currentFile(nodeId: string): Promise<{ name: string; mime: string | null; blob: Blob; size: number; version: number } | null> {
+  const node = await getNode(nodeId);
+  if (!node) return null;
+  const fresh = await readLocalBlob(nodeId, node.version);
+  if (fresh) return { name: node.name, mime: node.mime, blob: fresh, size: node.size, version: node.version };
+  const old = await currentBlob(nodeId);
+  if (!old) return null;
+  return { name: node.name, mime: old.mime, blob: new Blob([old.bytes], { type: old.mime || "application/octet-stream" }), size: node.size, version: old.version };
+}
+
+export async function listVersions(nodeId: string): Promise<PotionVersion[]> {
+  const node = await getNode(nodeId);
+  const vers = await listLocalVersions(nodeId);
+  const set = new Set(vers);
+  if (node && !set.has(node.version)) set.add(node.version);
+  return [...set].sort((a, b) => b - a).map((version) => ({
+    version,
+    current: node?.version === version,
+    updatedAt: node?.updatedAt ?? 0,
+    size: node?.size ?? 0,
+  }));
+}
+
+export async function revert(nodeId: string, version: number) {
+  const node = await getNode(nodeId);
+  if (!node) return null;
+  const blob = await readLocalBlob(nodeId, version);
+  if (!blob) return null;
+  const next = node.version + 1;
+  node.version = next;
+  node.size = blob.size;
+  node.hash = await fingerprint(blob);
+  node.updatedAt = Date.now();
+  const db = await open();
+  await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(node)));
+  db.close();
+  await writeLocalBlob(nodeId, next, blob);
+  notifyPotion("revert");
+  return node;
+}
+
+export async function listComments(nodeId: string): Promise<PotionComment[]> {
+  const db = await open();
+  const rows = await tx(db, ["comments"], "readonly", (t) => req(t.objectStore("comments").index("node").getAll(nodeId)));
+  db.close();
+  return (rows as PotionComment[]).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function addComment(nodeId: string, body: string): Promise<PotionComment> {
+  const row: PotionComment = { id: nid(), nodeId, body: body.trim().slice(0, 2000), createdAt: Date.now() };
+  if (!row.body) throw new Error("Empty comment");
+  const db = await open();
+  await tx(db, ["comments"], "readwrite", (t) => req(t.objectStore("comments").put(row)));
+  db.close();
+  notifyPotion("comment");
+  return row;
 }
 
 export async function createShare(nodeId: string, opts: { password?: string; hours?: number }) {

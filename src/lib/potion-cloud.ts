@@ -37,14 +37,6 @@ function nid() {
   return crypto.randomUUID();
 }
 
-async function hashOfB64(b64: string) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const d = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 type SqlClient = Awaited<ReturnType<typeof getSql>>;
 
 async function uniqueCloudName(sql: SqlClient, userId: string, parentId: string | null, name: string, skip?: string) {
@@ -138,11 +130,13 @@ export const listCloud = createServerFn({ method: "GET" })
           select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
           from potion_nodes
           where user_id = ${context.userId} and parent_id = ${parentId} and deleted_at is null
+            and (kind = 'folder' or version > 0)
           order by kind desc, name asc`
       : await sql<NodeRow>`
           select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
           from potion_nodes
           where user_id = ${context.userId} and parent_id is null and deleted_at is null
+            and (kind = 'folder' or version > 0)
           order by kind desc, name asc`;
     return rows.map(mapNode);
   });
@@ -154,7 +148,8 @@ export const listAllCloud = createServerFn({ method: "GET" })
     const rows = await sql<NodeRow>`
       select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
       from potion_nodes
-      where user_id = ${context.userId} and deleted_at is null`;
+      where user_id = ${context.userId} and deleted_at is null
+        and (kind = 'folder' or version > 0)`;
     return rows.map(mapNode);
   });
 
@@ -197,13 +192,10 @@ export const mkdirCloud = createServerFn({ method: "POST" })
   });
 
 export const putCloud = createServerFn({ method: "POST" })
-  .validator((d: { parentId: string | null; name: string; mime: string; content: string }) => d)
+  .validator((d: { parentId: string | null; name: string; mime: string; size: number; hash: string }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
-    if (data.content.length > 4_200_000) throw new Error("File too large (3 MB).");
     const sql = await getSql();
-    const size = Math.floor((data.content.length * 3) / 4);
-    const hash = await hashOfB64(data.content);
     const existing = data.parentId
       ? await sql<{ id: string; version: number }>`
           select id, version from potion_nodes
@@ -216,22 +208,40 @@ export const putCloud = createServerFn({ method: "POST" })
             and name = ${data.name} and kind = 'file' and deleted_at is null
           limit 1`;
     if (existing[0]) {
-      const next = Number(existing[0].version) + 1;
-      await sql`
-        update potion_nodes
-        set content = ${data.content}, mime = ${data.mime}, size = ${size}, hash = ${hash},
-            version = ${next}, updated_at = now()
-        where id = ${existing[0].id} and user_id = ${context.userId}`;
-      return { id: existing[0].id };
+      const current = Number(existing[0].version) || 0;
+      const next = current > 0 ? current + 1 : 1;
+      return { id: existing[0].id, version: next };
     }
     const id = nid();
     await sql`
-      insert into potion_nodes (id, user_id, parent_id, name, kind, mime, size, content, hash)
+      insert into potion_nodes (id, user_id, parent_id, name, kind, mime, size, hash, version, content)
       values (
         ${id}, ${context.userId}, ${data.parentId}, ${data.name}, 'file',
-        ${data.mime}, ${size}, ${data.content}, ${hash}
+        ${data.mime}, 0, null, 0, null
       )`;
-    return { id };
+    return { id, version: 1 };
+  });
+
+export const commitCloud = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; hash: string; size: number; mime: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const { blobSize, pruneBlobs } = await import("@/lib/potion-blob-server");
+    const onDisk = await blobSize(context.userId, data.id, data.version);
+    if (data.size > 0 && onDisk !== data.size) {
+      throw new Error("Upload incomplete");
+    }
+    await sql`
+      update potion_nodes
+      set mime = ${data.mime}, size = ${data.size}, hash = ${data.hash},
+          version = ${data.version}, updated_at = now(), content = null
+      where id = ${data.id} and user_id = ${context.userId}`;
+    await sql`
+      insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
+      values (${nid()}, ${context.userId}, ${data.id}, ${data.version}, ${data.size}, ${data.hash}, ${data.mime})`;
+    await pruneBlobs(context.userId, data.id, data.version);
+    return { id: data.id, version: data.version };
   });
 
 export const trashCloud = createServerFn({ method: "POST" })
@@ -255,13 +265,21 @@ export const getCloud = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context, data: id }) => {
     const sql = await getSql();
-    const rows = await sql<{ name: string; mime: string | null; content: string | null; size: number }>`
-      select name, mime, content, size from potion_nodes
+    const rows = await sql<{ name: string; mime: string | null; size: number; version: number; hash: string | null }>`
+      select name, mime, size, version, hash from potion_nodes
       where id = ${id} and user_id = ${context.userId} and kind = 'file' and deleted_at is null
+        and version > 0
       limit 1`;
     const row = rows[0];
     if (!row) return null;
-    return { name: row.name, mime: row.mime, content: row.content ?? "", size: Number(row.size) || 0 };
+    return {
+      name: row.name,
+      mime: row.mime,
+      content: "",
+      size: Number(row.size) || 0,
+      version: Number(row.version) || 1,
+      hash: row.hash,
+    };
   });
 
 export const copyCloud = createServerFn({ method: "POST" })
@@ -269,6 +287,7 @@ export const copyCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const sql = await getSql();
+    const { copyBlob } = await import("@/lib/potion-blob-server");
     async function unique(parentId: string | null, name: string, skip?: string) {
       const rows = parentId
         ? await sql<{ name: string; id: string }>`
@@ -291,22 +310,29 @@ export const copyCloud = createServerFn({ method: "POST" })
         kind: string;
         mime: string | null;
         size: number;
-        content: string | null;
         synced: boolean;
         hash: string | null;
+        version: number;
       }>`
-        select name, kind, mime, size, content, synced, hash from potion_nodes
+        select name, kind, mime, size, synced, hash, version from potion_nodes
         where id = ${id} and user_id = ${context.userId} and deleted_at is null limit 1`;
       const src = rows[0];
       if (!src) throw new Error("Missing");
       const name = await unique(dest, src.name);
       const newId = nid();
+      const ver = src.kind === "file" ? 1 : Number(src.version) || 1;
       await sql`
-        insert into potion_nodes (id, user_id, parent_id, name, kind, mime, size, content, synced, hash)
+        insert into potion_nodes (id, user_id, parent_id, name, kind, mime, size, content, synced, hash, version)
         values (
           ${newId}, ${context.userId}, ${dest}, ${name}, ${src.kind}, ${src.mime}, ${src.size},
-          ${src.content}, ${src.synced !== false}, ${src.hash}
+          null, ${src.synced !== false}, ${src.hash}, ${ver}
         )`;
+      if (src.kind === "file") {
+        await copyBlob(context.userId, id, Number(src.version) || 1, newId, 1);
+        await sql`
+          insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
+          values (${nid()}, ${context.userId}, ${newId}, 1, ${src.size}, ${src.hash}, ${src.mime})`;
+      }
       if (src.kind === "folder") {
         const kids = await sql<{ id: string }>`
           select id from potion_nodes
@@ -384,6 +410,7 @@ export const getSharedCloud = createServerFn({ method: "GET" })
         select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
         from potion_nodes
         where parent_id = ${node.id} and deleted_at is null
+          and (kind = 'folder' or version > 0)
         order by kind desc, name asc`;
       kids = childRows.map(mapNode);
     }
@@ -404,15 +431,21 @@ export const getSharedFileCloud = createServerFn({ method: "GET" })
       name: string;
       kind: string;
       mime: string | null;
-      content: string | null;
       size: number;
+      version: number;
     }>`
-      select id, parent_id, name, kind, mime, content, size
+      select id, parent_id, name, kind, mime, size, version
       from potion_nodes where id = ${data.id} and deleted_at is null and kind = 'file' limit 1`;
     const row = rows[0];
     if (!row) return null;
     if (row.id !== share.node_id && row.parent_id !== share.node_id) return null;
-    return { name: row.name, mime: row.mime, content: row.content ?? "", size: Number(row.size) || 0 };
+    return {
+      name: row.name,
+      mime: row.mime,
+      content: "",
+      size: Number(row.size) || 0,
+      version: Number(row.version) || 1,
+    };
   });
 
 export const listTargetsCloud = createServerFn({ method: "GET" })
@@ -484,6 +517,7 @@ export const searchCloud = createServerFn({ method: "GET" })
       select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
       from potion_nodes
       where user_id = ${context.userId} and deleted_at is null
+        and (kind = 'folder' or version > 0)
       order by updated_at desc`;
     return rows.map(mapNode).filter((n) => n.name.toLowerCase().includes(needle)).slice(0, 80);
   });
@@ -494,7 +528,7 @@ export const usedBytesCloud = createServerFn({ method: "GET" })
     const sql = await getSql();
     const rows = await sql<{ bytes: string | number | null }>`
       select coalesce(sum(size), 0) as bytes from potion_nodes
-      where user_id = ${context.userId} and kind = 'file' and deleted_at is null`;
+      where user_id = ${context.userId} and kind = 'file' and deleted_at is null and version > 0`;
     return { bytes: Number(rows[0]?.bytes) || 0 };
   });
 
@@ -532,18 +566,22 @@ export const restoreCloud = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+async function wipeNodes(sql: SqlClient, userId: string, ids: string[]) {
+  if (!ids.length) return;
+  const { deleteBlobs } = await import("@/lib/potion-blob-server");
+  await sql.query(`delete from potion_comments where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+  await sql.query(`delete from potion_versions where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+  await sql.query(`delete from potion_nodes where user_id = $1 and id = any($2::text[])`, [userId, ids]);
+  for (const id of ids) await deleteBlobs(userId, id);
+}
+
 export const purgeCloud = createServerFn({ method: "POST" })
   .validator((id: string) => id)
   .middleware([authMiddleware])
   .handler(async ({ context, data: id }) => {
     const sql = await getSql();
     const ids = await subtreeIds(sql, context.userId, id);
-    if (ids.length) {
-      await sql.query(`delete from potion_nodes where user_id = $1 and id = any($2::text[])`, [
-        context.userId,
-        ids,
-      ]);
-    }
+    await wipeNodes(sql, context.userId, ids);
     return { ok: true as const };
   });
 
@@ -551,6 +589,126 @@ export const emptyTrashCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
-    await sql`delete from potion_nodes where user_id = ${context.userId} and deleted_at is not null`;
+    const rows = await sql<{ id: string }>`
+      select id from potion_nodes where user_id = ${context.userId} and deleted_at is not null`;
+    await wipeNodes(sql, context.userId, rows.map((r) => r.id));
     return { ok: true as const };
+  });
+
+export const putBlobChunk = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; offset: number; data: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { writeChunk } = await import("@/lib/potion-blob-server");
+    const bytes = Buffer.from(data.data, "base64");
+    const wrote = await writeChunk(context.userId, data.id, data.version, data.offset, bytes);
+    return { wrote };
+  });
+
+export const getBlobChunk = createServerFn({ method: "GET" })
+  .validator((d: { id: string; version: number; offset: number; length: number }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { readChunk } = await import("@/lib/potion-blob-server");
+    const buf = await readChunk(context.userId, data.id, data.version, data.offset, data.length);
+    return { data: buf.toString("base64"), read: buf.byteLength };
+  });
+
+export const statBlob = createServerFn({ method: "GET" })
+  .validator((d: { id: string; version: number }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const { blobSize } = await import("@/lib/potion-blob-server");
+    return { size: await blobSize(context.userId, data.id, data.version) };
+  });
+
+export const getSharedBlobChunk = createServerFn({ method: "GET" })
+  .validator((d: { token: string; id: string; version: number; offset: number; length: number }) => d)
+  .handler(async ({ data }) => {
+    const sql = await getSql();
+    const shares = await sql<{ user_id: string; node_id: string }>`
+      select user_id, node_id from potion_shares where token = ${data.token} limit 1`;
+    const share = shares[0];
+    if (!share) return { data: "", read: 0 };
+    const rows = await sql<{ id: string; parent_id: string | null; kind: string }>`
+      select id, parent_id, kind from potion_nodes
+      where id = ${data.id} and deleted_at is null limit 1`;
+    const row = rows[0];
+    if (!row || row.kind !== "file") return { data: "", read: 0 };
+    if (row.id !== share.node_id && row.parent_id !== share.node_id) return { data: "", read: 0 };
+    const { readChunk } = await import("@/lib/potion-blob-server");
+    const buf = await readChunk(share.user_id, data.id, data.version, data.offset, data.length);
+    return { data: buf.toString("base64"), read: buf.byteLength };
+  });
+
+export const listVersionsCloud = createServerFn({ method: "GET" })
+  .validator((id: string) => id)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: id }) => {
+    const sql = await getSql();
+    const rows = await sql<{ version: number; size: number; created_at: string; hash: string | null }>`
+      select version, size, created_at, hash from potion_versions
+      where user_id = ${context.userId} and node_id = ${id}
+      order by version desc`;
+    const node = await sql<{ version: number }>`
+      select version from potion_nodes where id = ${id} and user_id = ${context.userId} limit 1`;
+    const current = Number(node[0]?.version) || 0;
+    return rows.map((r) => ({
+      version: Number(r.version),
+      size: Number(r.size) || 0,
+      updatedAt: Date.parse(r.created_at) || Date.now(),
+      current: Number(r.version) === current,
+      hash: r.hash,
+    }));
+  });
+
+export const revertCloud = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql<{ size: number; hash: string | null; mime: string | null }>`
+      select size, hash, mime from potion_versions
+      where user_id = ${context.userId} and node_id = ${data.id} and version = ${data.version} limit 1`;
+    const src = rows[0];
+    if (!src) throw new Error("Missing version");
+    const cur = await sql<{ version: number }>`
+      select version from potion_nodes where id = ${data.id} and user_id = ${context.userId} limit 1`;
+    const next = Number(cur[0]?.version || 1) + 1;
+    const { copyBlob, pruneBlobs } = await import("@/lib/potion-blob-server");
+    await copyBlob(context.userId, data.id, data.version, data.id, next);
+    await sql`
+      update potion_nodes
+      set version = ${next}, size = ${src.size}, hash = ${src.hash}, mime = ${src.mime}, updated_at = now()
+      where id = ${data.id} and user_id = ${context.userId}`;
+    await sql`
+      insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
+      values (${nid()}, ${context.userId}, ${data.id}, ${next}, ${src.size}, ${src.hash}, ${src.mime})`;
+    await pruneBlobs(context.userId, data.id, next);
+    return { version: next };
+  });
+
+export const listCommentsCloud = createServerFn({ method: "GET" })
+  .validator((id: string) => id)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: id }) => {
+    const sql = await getSql();
+    const rows = await sql<{ id: string; body: string; created_at: string }>`
+      select id, body, created_at from potion_comments
+      where user_id = ${context.userId} and node_id = ${id}
+      order by created_at asc`;
+    return rows.map((r) => ({ id: r.id, nodeId: id, body: r.body, createdAt: Date.parse(r.created_at) || Date.now() }));
+  });
+
+export const addCommentCloud = createServerFn({ method: "POST" })
+  .validator((d: { id: string; body: string }) => ({ id: d.id, body: d.body.trim().slice(0, 2000) }))
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    if (!data.body) throw new Error("Empty comment");
+    const sql = await getSql();
+    const id = nid();
+    await sql`
+      insert into potion_comments (id, user_id, node_id, body)
+      values (${id}, ${context.userId}, ${data.id}, ${data.body})`;
+    return { id, nodeId: data.id, body: data.body, createdAt: Date.now() };
   });

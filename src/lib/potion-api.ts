@@ -1,9 +1,19 @@
 import * as db from "@/lib/potion-db";
-import type { PotionNode } from "@/lib/potion-db";
+import type { PotionComment, PotionNode, PotionVersion } from "@/lib/potion-db";
 import * as cloud from "@/lib/potion-cloud";
+import { fingerprint, fromBase64, readLocalBlob, SLICE, toBase64, writeLocalBlob } from "@/lib/potion-blob";
+import { notifyPotion } from "@/lib/potion-watch";
 
-export type { PotionNode };
+export type { PotionComment, PotionNode, PotionVersion };
 export type StoreMode = "local" | "cloud";
+
+export type PotionFile = {
+  name: string;
+  mime: string | null;
+  blob: Blob;
+  size: number;
+  version: number;
+};
 
 export type TreeEntry = {
   node: PotionNode;
@@ -11,26 +21,14 @@ export type TreeEntry = {
   parentPath: string;
 };
 
-async function fileToB64(file: Blob) {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+export type PutProgress = { done: number; total: number; name: string };
+
+function asFile(name: string, mime: string | null, blob: Blob) {
+  return new File([blob], name, { type: mime || blob.type || "application/octet-stream" });
 }
 
-function b64ToBytes(b64: string) {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function asFile(name: string, mime: string | null, bytes: ArrayBuffer) {
-  return new File([bytes], name, { type: mime || "application/octet-stream" });
+function afterCloud() {
+  notifyPotion("cloud");
 }
 
 export async function ensurePotion(mode: StoreMode) {
@@ -46,6 +44,7 @@ export async function ensurePotion(mode: StoreMode) {
 async function mkdirId(mode: StoreMode, parentId: string | null, name: string): Promise<string> {
   if (mode === "cloud") {
     const made = await cloud.mkdirCloud({ data: { parentId, name } });
+    afterCloud();
     return made.id;
   }
   const node = await db.mkdir(parentId, name);
@@ -72,12 +71,20 @@ export async function pathOf(mode: StoreMode, id: string | null) {
 }
 
 export async function mkdir(mode: StoreMode, parentId: string | null, name: string) {
-  if (mode === "cloud") return cloud.mkdirCloud({ data: { parentId, name } });
+  if (mode === "cloud") {
+    const made = await cloud.mkdirCloud({ data: { parentId, name } });
+    afterCloud();
+    return made;
+  }
   return db.mkdir(parentId, name);
 }
 
 export async function renameNode(mode: StoreMode, id: string, name: string) {
-  if (mode === "cloud") return cloud.renameCloud({ data: { id, name } });
+  if (mode === "cloud") {
+    const r = await cloud.renameCloud({ data: { id, name } });
+    afterCloud();
+    return r;
+  }
   return db.rename(id, name);
 }
 
@@ -134,17 +141,72 @@ export async function ensureFolderPath(mode: StoreMode, parts: string[]): Promis
   return parent;
 }
 
-export async function putFiles(mode: StoreMode, parentId: string | null, files: File[]) {
+async function uploadChunks(
+  id: string,
+  version: number,
+  blob: Blob,
+  name: string,
+  onProgress?: (p: PutProgress) => void,
+) {
+  if (blob.size === 0) {
+    onProgress?.({ done: 1, total: 1, name });
+    return;
+  }
+  const total = Math.max(1, Math.ceil(blob.size / SLICE));
+  let done = 0;
+  for (let offset = 0; offset < blob.size; offset += SLICE) {
+    const slice = blob.slice(offset, Math.min(offset + SLICE, blob.size));
+    const buf = await slice.arrayBuffer();
+    await cloud.putBlobChunk({ data: { id, version, offset, data: toBase64(buf) } });
+    done += 1;
+    onProgress?.({ done, total, name });
+  }
+}
+
+async function downloadChunks(id: string, version: number, size: number, mime: string | null) {
+  const cached = await readLocalBlob(id, version);
+  if (cached && cached.size === size) return cached;
+  const parts: BlobPart[] = [];
+  for (let offset = 0; offset < size; offset += SLICE) {
+    const chunk = await cloud.getBlobChunk({
+      data: { id, version, offset, length: SLICE },
+    });
+    if (!chunk.read) break;
+    parts.push(fromBase64(chunk.data));
+  }
+  const blob = new Blob(parts, { type: mime || "application/octet-stream" });
+  if (blob.size) await writeLocalBlob(id, version, blob);
+  return blob;
+}
+
+async function putCloudBlob(
+  parentId: string | null,
+  name: string,
+  mime: string,
+  blob: Blob,
+  onProgress?: (p: PutProgress) => void,
+) {
+  const hash = await fingerprint(blob);
+  const started = await cloud.putCloud({
+    data: { parentId, name, mime, size: blob.size, hash },
+  });
+  await uploadChunks(started.id, started.version, blob, name, onProgress);
+  await cloud.commitCloud({
+    data: { id: started.id, version: started.version, hash, size: blob.size, mime },
+  });
+  afterCloud();
+  return started;
+}
+
+export async function putFiles(
+  mode: StoreMode,
+  parentId: string | null,
+  files: File[],
+  onProgress?: (p: PutProgress) => void,
+) {
   if (mode === "cloud") {
     for (const f of files) {
-      await cloud.putCloud({
-        data: {
-          parentId,
-          name: f.name,
-          mime: f.type || db.guessMime(f.name),
-          content: await fileToB64(f),
-        },
-      });
+      await putCloudBlob(parentId, f.name, f.type || db.guessMime(f.name), f, onProgress);
     }
     try {
       const crumbs = await pathOf("cloud", parentId);
@@ -162,37 +224,65 @@ export async function putFiles(mode: StoreMode, parentId: string | null, files: 
 }
 
 export async function trashNode(mode: StoreMode, id: string) {
-  if (mode === "cloud") return cloud.trashCloud({ data: id });
+  if (mode === "cloud") {
+    const r = await cloud.trashCloud({ data: id });
+    afterCloud();
+    return r;
+  }
   return db.trash(id);
 }
 
 export async function restoreNode(mode: StoreMode, id: string) {
-  if (mode === "cloud") return cloud.restoreCloud({ data: id });
+  if (mode === "cloud") {
+    const r = await cloud.restoreCloud({ data: id });
+    afterCloud();
+    return r;
+  }
   return db.restore(id);
 }
 
 export async function purgeNode(mode: StoreMode, id: string) {
-  if (mode === "cloud") return cloud.purgeCloud({ data: id });
+  if (mode === "cloud") {
+    const r = await cloud.purgeCloud({ data: id });
+    afterCloud();
+    return r;
+  }
   return db.purge(id);
 }
 
 export async function emptyTrash(mode: StoreMode) {
-  if (mode === "cloud") return cloud.emptyTrashCloud();
+  if (mode === "cloud") {
+    const r = await cloud.emptyTrashCloud();
+    afterCloud();
+    return r;
+  }
   return db.emptyTrash();
 }
 
 export async function copyNode(mode: StoreMode, id: string, destParentId: string | null) {
-  if (mode === "cloud") return cloud.copyCloud({ data: { id, destParentId } });
+  if (mode === "cloud") {
+    const r = await cloud.copyCloud({ data: { id, destParentId } });
+    afterCloud();
+    return r;
+  }
   return db.copyNode(id, destParentId);
 }
 
 export async function moveNode(mode: StoreMode, id: string, destParentId: string | null) {
-  if (mode === "cloud") return cloud.moveCloud({ data: { id, destParentId } });
+  if (mode === "cloud") {
+    const r = await cloud.moveCloud({ data: { id, destParentId } });
+    afterCloud();
+    return r;
+  }
   return db.moveNode(id, destParentId);
 }
 
 export async function setSynced(mode: StoreMode, id: string, synced: boolean) {
-  if (mode === "cloud") return cloud.syncCloud({ data: { id, synced } });
+  if (mode === "cloud") {
+    const r = await cloud.syncCloud({ data: { id, synced } });
+    afterCloud();
+    return r;
+  }
   return db.setSynced(id, synced);
 }
 
@@ -206,42 +296,71 @@ export async function listFolderTargets(mode: StoreMode, excludeId?: string) {
   return db.listFolderTargets(excludeId);
 }
 
-export async function getFile(mode: StoreMode, id: string) {
+export async function getFile(mode: StoreMode, id: string): Promise<PotionFile | null> {
   if (mode === "cloud") {
     const file = await cloud.getCloud({ data: id });
     if (!file) return null;
-    return {
-      name: file.name,
-      mime: file.mime,
-      bytes: b64ToBytes(file.content).buffer,
-      size: file.size,
-    };
+    const blob = await downloadChunks(id, file.version, file.size, file.mime);
+    return { name: file.name, mime: file.mime, blob, size: file.size, version: file.version };
   }
-  const node = await db.getNode(id);
-  const blob = await db.currentBlob(id);
-  if (!node || !blob) return null;
-  return { name: node.name, mime: blob.mime, bytes: blob.bytes, size: node.size };
+  return db.currentFile(id);
 }
 
-export async function putLocalFile(parentPath: string, name: string, mime: string | null, bytes: ArrayBuffer) {
+export async function putLocalFile(parentPath: string, name: string, mime: string | null, blob: Blob) {
   const parentId = await ensureFolderPath(
     "local",
     parentPath.split("/").filter(Boolean),
   );
-  await db.putFiles(parentId, [asFile(name, mime, bytes)]);
+  await db.putFiles(parentId, [asFile(name, mime, blob)]);
 }
 
-export async function putCloudFile(parentPath: string, name: string, mime: string | null, bytes: ArrayBuffer) {
+export async function putCloudFile(parentPath: string, name: string, mime: string | null, blob: Blob) {
   const parentId = await ensureFolderPath(
     "cloud",
     parentPath.split("/").filter(Boolean),
   );
-  await cloud.putCloud({
-    data: {
-      parentId,
-      name,
-      mime: mime || db.guessMime(name),
-      content: await fileToB64(new Blob([bytes])),
-    },
-  });
+  await putCloudBlob(parentId, name, mime || db.guessMime(name), blob);
+}
+
+export async function listVersions(mode: StoreMode, id: string): Promise<PotionVersion[]> {
+  if (mode === "cloud") return cloud.listVersionsCloud({ data: id });
+  return db.listVersions(id);
+}
+
+export async function revertNode(mode: StoreMode, id: string, version: number) {
+  if (mode === "cloud") {
+    const r = await cloud.revertCloud({ data: { id, version } });
+    afterCloud();
+    return r;
+  }
+  return db.revert(id, version);
+}
+
+export async function listComments(mode: StoreMode, id: string): Promise<PotionComment[]> {
+  if (mode === "cloud") return cloud.listCommentsCloud({ data: id });
+  return db.listComments(id);
+}
+
+export async function addComment(mode: StoreMode, id: string, body: string) {
+  if (mode === "cloud") {
+    const row = await cloud.addCommentCloud({ data: { id, body } });
+    afterCloud();
+    return row;
+  }
+  return db.addComment(id, body);
+}
+
+export async function pullSharedFile(token: string, id: string): Promise<PotionFile | null> {
+  const file = await cloud.getSharedFileCloud({ data: { token, id } });
+  if (!file) return null;
+  const parts: BlobPart[] = [];
+  for (let offset = 0; offset < file.size; offset += SLICE) {
+    const chunk = await cloud.getSharedBlobChunk({
+      data: { token, id, version: file.version, offset, length: SLICE },
+    });
+    if (!chunk.read) break;
+    parts.push(fromBase64(chunk.data));
+  }
+  const blob = new Blob(parts, { type: file.mime || "application/octet-stream" });
+  return { name: file.name, mime: file.mime, blob, size: file.size, version: file.version };
 }

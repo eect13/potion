@@ -19,7 +19,7 @@ describe("file helpers", () => {
   it("formats byte sizes", () => {
     assert.equal(formatBytes(0), "0 B");
     assert.equal(formatBytes(1024), "1.0 KB");
-    assert.equal(formatBytes(1048576), "1.0 MB");
+    assert.equal(formatBytes(1073741824), "1.00 GB");
   });
 });
 

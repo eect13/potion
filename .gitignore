@@ -9,7 +9,8 @@ build
 .env
 .env.*
 !.env.example
-screenshots
+.data
+
 artifacts
 attachments
 .grok
