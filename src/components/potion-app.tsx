@@ -1,23 +1,74 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "@tanstack/react-router";
-import { Folder, FileText, Upload, Save, Trash2, Blocks, Copy, RotateCcw, Cloud, Sun, Moon, PanelLeftClose, PanelLeft, LogIn, Share2, CloudOff, MoreHorizontal, FolderInput, Link2, Play, Pause, Square, Plus, LayoutList, LayoutGrid, Image as ImageIcon, Film, Music, FileArchive, File as FileIcon, Smartphone } from "lucide-react";
+import {
+  Folder,
+  FileText,
+  Upload,
+  Trash2,
+  Copy,
+  RotateCcw,
+  Cloud,
+  Sun,
+  Moon,
+  PanelLeftClose,
+  PanelLeft,
+  LogIn,
+  Share2,
+  MoreHorizontal,
+  Link2,
+  Play,
+  Pause,
+  Square,
+  LayoutList,
+  LayoutGrid,
+  Image as ImageIcon,
+  Film,
+  Music,
+  FileArchive,
+  File as FileIcon,
+  Smartphone,
+  Search,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react";
 import { PotionMark } from "@/components/potion-mark";
 import { APP_VERSION_LABEL } from "@/lib/version";
 import { readTheme, writeTheme, type Theme } from "@/lib/theme";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import * as api from "@/lib/potion-api";
-import type { ConnectedApp, PotionNode, RestoreRecord, StoreMode } from "@/lib/potion-api";
-import { formatBytes, cn, fileKind } from "@/lib/utils";
-import { pauseSync, retrySync, startSync, stopSync, subscribeSync, type SyncState } from "@/lib/potion-sync";
+import type { PotionNode, StoreMode } from "@/lib/potion-api";
+import {
+  formatBytes,
+  formatWhen,
+  cn,
+  fileKind,
+  kindLabel,
+  typeLabel,
+  sortNodes,
+  type SortKey,
+  type SortDir,
+} from "@/lib/utils";
+import {
+  maybeAutoSync,
+  pauseSync,
+  retrySync,
+  startSync,
+  stopSync,
+  subscribeSync,
+  type SyncState,
+} from "@/lib/potion-sync";
 
-type View = "folder" | "apps" | "sync";
+type View = "folder" | "trash" | "sync";
 type Layout = "list" | "grid";
 
-function backupPayload(app: string) {
-  return JSON.stringify({ app, kind: "backup", createdAt: new Date().toISOString() }, null, 2);
-}
+const SORT_LABEL: Record<SortKey, string> = {
+  name: "Name",
+  date: "Date modified",
+  type: "Type",
+  size: "Size",
+};
 
 export function PotionApp() {
   const { user, isPending } = useCurrentUserState();
@@ -26,9 +77,7 @@ export function PotionApp() {
   const [parentId, setParentId] = useState<string | null>(null);
   const [crumbs, setCrumbs] = useState<PotionNode[]>([]);
   const [items, setItems] = useState<PotionNode[]>([]);
-  const [apps, setApps] = useState<ConnectedApp[]>([]);
-  const [backups, setBackups] = useState<PotionNode[]>([]);
-  const [restored, setRestored] = useState<RestoreRecord | null>(null);
+  const [trashItems, setTrashItems] = useState<PotionNode[]>([]);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [sheet, setSheet] = useState<ReactNode>(null);
@@ -36,15 +85,21 @@ export function PotionApp() {
   const [ready, setReady] = useState(false);
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
-  const [space, setSpace] = useState("");
   const [theme, setTheme] = useState<Theme>("dark");
   const [collapsed, setCollapsed] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("list");
   const [preview, setPreview] = useState<PotionNode | null>(null);
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [used, setUsed] = useState(0);
+  const [renameFor, setRenameFor] = useState<PotionNode | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef(0);
+  const lastClick = useRef<string | null>(null);
 
   const ping = (msg: string) => {
     setToast(msg);
@@ -77,27 +132,38 @@ export function PotionApp() {
     }
   }
 
+  function setSort(next: SortKey) {
+    const dir: SortDir = sortKey === next && sortDir === "asc" ? "desc" : "asc";
+    setSortKey(next);
+    setSortDir(dir);
+    try {
+      localStorage.setItem("potion-sort", `${next}:${dir}`);
+    } catch {
+      /* ignore */
+    }
+  }
+
   const refresh = useCallback(async () => {
     if (isPending) return;
     await api.ensurePotion(mode);
-    setItems(await api.listNodes(mode, parentId));
+    if (view === "trash") {
+      setTrashItems(await api.listTrash(mode));
+    } else if (query.trim()) {
+      setItems(await api.searchNodes(mode, query.trim()));
+    } else {
+      setItems(await api.listNodes(mode, parentId));
+    }
     const path = await api.pathOf(mode, parentId);
     setCrumbs(path);
-    setSelected(null);
+    setSelected([]);
     setMenuFor(null);
-    const nextApps = await api.connectedApps(mode);
-    setApps(nextApps);
-    setRestored(api.lastRestore());
-    setSpace(api.spaceKey());
-    const appName = nextApps.find((a) => path.some((c) => c.name === a.name))?.name;
-    if (appName) {
-      const b = await api.listAppBackups(mode, appName);
-      setBackups(b.files);
-    } else {
-      setBackups([]);
+    try {
+      setUsed(await api.usedBytes(mode));
+    } catch {
+      /* ignore */
     }
     setReady(true);
-  }, [mode, parentId, isPending]);
+  }, [mode, parentId, isPending, query, view]);
 
   useEffect(() => {
     void refresh().catch(() => setReady(true));
@@ -110,15 +176,16 @@ export function PotionApp() {
     try {
       setCollapsed(localStorage.getItem("potion-rail") === "1");
       setLayout(localStorage.getItem("potion-layout") === "grid" ? "grid" : "list");
+      const raw = localStorage.getItem("potion-sort") || "";
+      const [k, d] = raw.split(":");
+      if (k === "name" || k === "date" || k === "type" || k === "size") setSortKey(k);
+      if (d === "asc" || d === "desc") setSortDir(d);
     } catch {
       /* ignore */
     }
   }, []);
 
-  const activeApp = crumbs.find((c) => apps.some((a) => a.name === c.name))?.name;
-  const module = activeApp
-    ? { backupLabel: `Save a ${activeApp} backup`, payload: () => backupPayload(activeApp) }
-    : null;
+  const shown = useMemo(() => sortNodes(view === "trash" ? trashItems : items, sortKey, sortDir), [items, trashItems, view, sortKey, sortDir]);
 
   async function upload(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
@@ -127,52 +194,10 @@ export function PotionApp() {
       await api.putFiles(mode, parentId, Array.from(files));
       ping(`Added ${files.length} file${files.length === 1 ? "" : "s"}`);
       await refresh();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveBackup() {
-    if (!activeApp || !module) return;
-    setBusy(true);
-    try {
-      const made = await api.saveAppBackup(mode, activeApp, module.payload());
-      ping(`Saved ${made.name}`);
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function restore(node: PotionNode) {
-    setBusy(true);
-    try {
-      const result = await api.restoreBackup(mode, node.id, user ? "account" : "this-device");
-      ping(`Handed ${result.fileName} to the app`);
-      setSheet(
-        <div className="space-y-4">
-          <h3 className="font-serif text-2xl italic">File ready</h3>
-          <p className="text-sm text-muted">
-            Potion carried <span className="text-foreground">{result.fileName}</span>. The other app
-            opens it — Potion does not.
-          </p>
-          {result.preview ? (
-            <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-elevated p-3 font-mono text-xs text-muted">
-              {result.preview}
-            </pre>
-          ) : null}
-          <div className="flex justify-end">
-            <button
-              type="button"
-              className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
-              onClick={() => setSheet(null)}
-            >
-              Done
-            </button>
-          </div>
-        </div>,
-      );
-      await refresh();
+      maybeAutoSync(mode);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not add files";
+      ping(/too large/i.test(msg) ? "One file is over 8 MB for the locker" : msg);
     } finally {
       setBusy(false);
     }
@@ -198,8 +223,7 @@ export function PotionApp() {
 
   async function deleteItem(node: PotionNode) {
     await api.trashNode(mode, node.id);
-    ping(`Deleted ${node.name}`);
-    setSelected(null);
+    ping(`Moved ${node.name} to trash`);
     setMenuFor(null);
     await refresh();
   }
@@ -214,9 +238,7 @@ export function PotionApp() {
 
   async function shareItem(node: PotionNode) {
     const share = await api.shareNode(mode, node.id);
-    const origin =
-      mode === "cloud" ? "https://potion-eect13.vercel.app" : window.location.origin;
-    const url = `${origin}/s/${share.token}`;
+    const url = `${window.location.origin}/s/${share.token}`;
     setMenuFor(null);
     setSheet(
       <ShareSheet
@@ -249,6 +271,68 @@ export function PotionApp() {
     );
   }
 
+  function openRename(node: PotionNode) {
+    setMenuFor(null);
+    setRenameFor(node);
+    setRenameValue(node.name);
+  }
+
+  async function commitRename() {
+    if (!renameFor) return;
+    const next = renameValue.trim();
+    if (!next || next === renameFor.name) {
+      setRenameFor(null);
+      return;
+    }
+    await api.renameNode(mode, renameFor.id, next);
+    ping(`Renamed to ${next}`);
+    setRenameFor(null);
+    await refresh();
+  }
+
+  function pick(node: PotionNode, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
+    const ids = shown.map((n) => n.id);
+    if (e.shiftKey && lastClick.current) {
+      const a = ids.indexOf(lastClick.current);
+      const b = ids.indexOf(node.id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelected(ids.slice(lo, hi + 1));
+        return;
+      }
+    }
+    if (e.metaKey || e.ctrlKey) {
+      setSelected((cur) => (cur.includes(node.id) ? cur.filter((id) => id !== node.id) : [...cur, node.id]));
+      lastClick.current = node.id;
+      return;
+    }
+    setSelected([node.id]);
+    lastClick.current = node.id;
+  }
+
+  const selectedNodes = shown.filter((n) => selected.includes(n.id));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && view === "folder") {
+        e.preventDefault();
+        setSelected(shown.map((n) => n.id));
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const n = selectedNodes[0];
+        if (n && view === "folder") void deleteItem(n);
+      }
+      if (e.key === "F2") {
+        const n = selectedNodes[0];
+        if (n) openRename(n);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground md:flex-row">
       <aside
@@ -262,6 +346,11 @@ export function PotionApp() {
           <Nav view={view} setView={setView} collapsed={collapsed} />
         </div>
         <div className={cn("flex flex-col gap-1 border-t border-border pt-3", collapsed && "items-center")}>
+          {collapsed ? null : (
+            <p className="px-3 pb-2 font-mono text-xs text-faint tabular-nums">
+              {formatBytes(used)} {mode === "cloud" ? "in locker" : "on this device"}
+            </p>
+          )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} collapsed={collapsed} />
           <button
             type="button"
@@ -290,56 +379,91 @@ export function PotionApp() {
           </div>
         </header>
 
-        {view === "folder" ? (
+        {view === "sync" ? (
+          <header className="border-b border-border px-4 py-4 md:px-6">
+            <h1 className="font-serif text-2xl italic">Sync</h1>
+          </header>
+        ) : view === "trash" ? (
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 md:px-6">
-            <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-1 text-sm">
-              <button type="button" className="text-muted hover:text-accent" onClick={() => setParentId(null)}>
-                Potion
-              </button>
-              {crumbs.map((c) => (
-                <span key={c.id} className="flex items-center gap-1">
-                  <span className="text-faint">/</span>
-                  <button type="button" className="truncate text-muted hover:text-accent" onClick={() => setParentId(c.id)}>
-                    {c.name}
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <LayoutToggle layout={layout} onChange={setLayoutMode} />
-              <button
-                type="button"
-                className="h-11 rounded-full border border-border px-4 text-sm"
-                onClick={() => setMkdirOpen(true)}
-              >
-                New folder
-              </button>
-              <button
-                type="button"
-                title="Photos, videos, PDFs, zips — any file"
-                className="inline-flex h-11 items-center gap-2 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60"
-                disabled={busy}
-                onClick={() => fileRef.current?.click()}
-              >
-                <Upload className="size-4" strokeWidth={1.75} />
-                {busy ? "Saving" : "Add files"}
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  const list = e.target.files ? Array.from(e.target.files) : [];
-                  e.target.value = "";
-                  void upload(list);
-                }}
-              />
-            </div>
+            <h1 className="font-serif text-2xl italic">Trash</h1>
+            <button
+              type="button"
+              className="h-11 rounded-full border border-border px-4 text-sm disabled:opacity-40"
+              disabled={trashItems.length === 0}
+              onClick={() => {
+                void (async () => {
+                  await api.emptyTrash(mode);
+                  ping("Trash emptied");
+                  await refresh();
+                })();
+              }}
+            >
+              Empty trash
+            </button>
           </header>
         ) : (
-          <header className="border-b border-border px-4 py-4 md:px-6">
-            <h1 className="font-serif text-2xl italic">{view === "apps" ? "Apps" : "Sync"}</h1>
+          <header className="flex flex-col gap-3 border-b border-border px-4 py-3 md:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-1 text-sm">
+                <button type="button" className="text-muted hover:text-accent" onClick={() => { setParentId(null); setQuery(""); }}>
+                  Potion
+                </button>
+                {query.trim() ? (
+                  <span className="flex items-center gap-1">
+                    <span className="text-faint">/</span>
+                    <span className="text-foreground">Search</span>
+                  </span>
+                ) : (
+                  crumbs.map((c) => (
+                    <span key={c.id} className="flex items-center gap-1">
+                      <span className="text-faint">/</span>
+                      <button type="button" className="truncate text-muted hover:text-accent" onClick={() => setParentId(c.id)}>
+                        {c.name}
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <LayoutToggle layout={layout} onChange={setLayoutMode} />
+                <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={() => setMkdirOpen(true)}>
+                  New folder
+                </button>
+                <button
+                  type="button"
+                  title="Photos, videos, PDFs, zips — any file"
+                  className="inline-flex h-11 items-center gap-2 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <Upload className="size-4" strokeWidth={1.75} />
+                  {busy ? "Saving" : "Add files"}
+                </button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const list = e.target.files ? Array.from(e.target.files) : [];
+                    e.target.value = "";
+                    void upload(list);
+                  }}
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="relative min-w-48 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-faint" strokeWidth={1.75} />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search Potion"
+                  className="h-11 w-full rounded-full border border-border bg-background pl-10 pr-4 text-sm"
+                />
+              </label>
+              {layout === "grid" ? <SortMenu sortKey={sortKey} sortDir={sortDir} onSort={setSort} /> : null}
+            </div>
           </header>
         )}
 
@@ -359,73 +483,52 @@ export function PotionApp() {
           {!ready || isPending ? (
             <div className="h-40 animate-pulse rounded-xl bg-card" />
           ) : view === "sync" ? (
-            <SyncPanel signedIn={!!user} mode={mode} />
-          ) : view === "apps" ? (
-            <AppsPanel
-              apps={apps}
-              space={space}
-              onOpen={async (app) => {
-                const id = app.folderId || (await api.ensureAppFolder(mode, app.name));
-                setParentId(id);
-                setView("folder");
-              }}
-              onAdd={async (name) => {
-                try {
-                  const made = await api.addConnectedApp(mode, name);
-                  ping(`Added ${made.name} — look in Folder / Apps`);
-                  await refresh();
-                } catch (err) {
-                  ping(err instanceof Error ? err.message : "Could not add app");
+            <SyncPanel signedIn={!!user} mode={mode} used={used} />
+          ) : (
+            <FolderGrid
+              layout={layout}
+              mode={mode}
+              view={view}
+              items={shown}
+              over={over}
+              selected={selected}
+              menuFor={menuFor}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={setSort}
+              onPick={pick}
+              onMenu={setMenuFor}
+              onOpen={(n) => {
+                if (view === "trash") return;
+                if (n.kind === "folder") {
+                  setQuery("");
+                  setParentId(n.id);
                 }
               }}
-              onRemove={async (name) => {
-                await api.removeConnectedApp(name);
-                ping(`Removed ${name}`);
+              onPreview={(n) => {
+                if (view === "trash") return;
+                const kind = fileKind(n.mime, n.name);
+                if (kind === "image" || kind === "video" || kind === "audio") setPreview(n);
+                else setSelected([n.id]);
+              }}
+              onGet={(n) => void download(n)}
+              onCopy={(n) => void copyItem(n)}
+              onMove={(n) => void moveItem(n)}
+              onShare={(n) => void shareItem(n)}
+              onSync={(n) => void toggleSync(n)}
+              onTrash={(n) => void deleteItem(n)}
+              onRename={openRename}
+              onRestore={async (n) => {
+                await api.restoreNode(mode, n.id);
+                ping(`Restored ${n.name}`);
                 await refresh();
               }}
-              onCopy={() => {
-                void navigator.clipboard.writeText(space);
-                ping("Copied Potion key");
+              onPurge={async (n) => {
+                await api.purgeNode(mode, n.id);
+                ping(`Deleted ${n.name} forever`);
+                await refresh();
               }}
             />
-          ) : (
-            <div className="flex flex-col gap-5">
-              {module && activeApp ? (
-                <AppModule
-                  name={activeApp}
-                  label={module.backupLabel}
-                  files={backups}
-                  restored={restored}
-                  busy={busy}
-                  onSave={() => void saveBackup()}
-                  onRestore={(n) => void restore(n)}
-                />
-              ) : null}
-              <FolderGrid
-                layout={layout}
-                mode={mode}
-                items={items}
-                over={over}
-                selected={selected}
-                menuFor={menuFor}
-                onSelect={setSelected}
-                onMenu={setMenuFor}
-                onOpen={(n) => {
-                  if (n.kind === "folder") setParentId(n.id);
-                }}
-                onPreview={(n) => {
-                  const kind = fileKind(n.mime, n.name);
-                  if (kind === "image" || kind === "video" || kind === "audio") setPreview(n);
-                  else setSelected(n.id);
-                }}
-                onGet={(n) => void download(n)}
-                onCopy={(n) => void copyItem(n)}
-                onMove={(n) => void moveItem(n)}
-                onShare={(n) => void shareItem(n)}
-                onSync={(n) => void toggleSync(n)}
-                onTrash={(n) => void deleteItem(n)}
-              />
-            </div>
           )}
         </section>
       </div>
@@ -434,7 +537,7 @@ export function PotionApp() {
         {(
           [
             ["folder", "Folder", Folder],
-            ["apps", "Apps", Blocks],
+            ["trash", "Trash", Trash2],
             ["sync", "Sync", Cloud],
           ] as const
         ).map(([id, label, Icon]) => (
@@ -489,6 +592,34 @@ export function PotionApp() {
         </Modal>
       ) : null}
 
+      {renameFor ? (
+        <Modal onClose={() => setRenameFor(null)}>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void commitRename();
+            }}
+          >
+            <h3 className="font-serif text-2xl italic">Rename</h3>
+            <input
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              autoFocus
+              className="h-11 w-full rounded-lg border border-border bg-background px-3"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={() => setRenameFor(null)}>
+                Cancel
+              </button>
+              <button type="submit" disabled={!renameValue.trim()} className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60">
+                Save
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
       {sheet ? <Modal onClose={() => setSheet(null)}>{sheet}</Modal> : null}
 
       {preview ? (
@@ -515,7 +646,7 @@ function Brand({ collapsed }: { collapsed: boolean }) {
       ) : (
         <div>
           <p className="text-sm font-medium leading-tight">Potion</p>
-          <p className="text-[11px] text-muted">{APP_VERSION_LABEL}</p>
+          <p className="text-xs text-muted">{APP_VERSION_LABEL}</p>
         </div>
       )}
     </div>
@@ -562,7 +693,7 @@ function Nav({ view, setView, collapsed }: { view: View; setView: (v: View) => v
       {(
         [
           ["folder", "Folder", Folder],
-          ["apps", "Apps", Blocks],
+          ["trash", "Trash", Trash2],
           ["sync", "Sync", Cloud],
         ] as const
       ).map(([id, label, Icon]) => (
@@ -589,24 +720,40 @@ function LayoutToggle({ layout, onChange }: { layout: Layout; onChange: (l: Layo
   const btn = "grid size-11 place-items-center rounded-full text-muted";
   return (
     <div className="flex rounded-full border border-border p-0.5">
-      <button
-        type="button"
-        title="List"
-        className={cn(btn, layout === "list" && "bg-elevated text-foreground")}
-        onClick={() => onChange("list")}
-      >
+      <button type="button" title="List" className={cn(btn, layout === "list" && "bg-elevated text-foreground")} onClick={() => onChange("list")}>
         <LayoutList className="size-4" strokeWidth={1.75} />
         <span className="sr-only">List</span>
       </button>
-      <button
-        type="button"
-        title="Grid"
-        className={cn(btn, layout === "grid" && "bg-elevated text-foreground")}
-        onClick={() => onChange("grid")}
-      >
+      <button type="button" title="Grid" className={cn(btn, layout === "grid" && "bg-elevated text-foreground")} onClick={() => onChange("grid")}>
         <LayoutGrid className="size-4" strokeWidth={1.75} />
         <span className="sr-only">Grid</span>
       </button>
+    </div>
+  );
+}
+
+function SortGlyph({ active, dir }: { active: boolean; dir: SortDir }) {
+  if (!active) return null;
+  return dir === "asc" ? <ArrowUp className="size-3.5" strokeWidth={1.75} /> : <ArrowDown className="size-3.5" strokeWidth={1.75} />;
+}
+
+function SortMenu({ sortKey, sortDir, onSort }: { sortKey: SortKey; sortDir: SortDir; onSort: (k: SortKey) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1 rounded-full border border-border p-0.5">
+      {(Object.keys(SORT_LABEL) as SortKey[]).map((k) => (
+        <button
+          key={k}
+          type="button"
+          onClick={() => onSort(k)}
+          className={cn(
+            "inline-flex h-10 items-center gap-1 rounded-full px-3 text-xs",
+            sortKey === k ? "bg-elevated text-foreground" : "text-muted",
+          )}
+        >
+          {SORT_LABEL[k]}
+          <SortGlyph active={sortKey === k} dir={sortDir} />
+        </button>
+      ))}
     </div>
   );
 }
@@ -626,7 +773,7 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
   const kind = node.kind === "file" ? fileKind(node.mime, node.name) : null;
   const size = layout === "grid" ? "size-7" : "size-5";
   useEffect(() => {
-    if (kind !== "image") return;
+    if (kind !== "image" || layout !== "grid") return;
     let gone = false;
     let objectUrl: string | null = null;
     void (async () => {
@@ -643,21 +790,13 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
       gone = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [kind, mode, node.id]);
+  }, [kind, mode, node.id, layout]);
   if (node.kind === "folder") {
-    if (node.name === "Apps") {
-      return <Blocks className={cn("shrink-0 text-muted", size)} strokeWidth={1.6} />;
-    }
     return <Folder className={cn("shrink-0 text-muted", size)} strokeWidth={1.6} />;
   }
   if (url) {
     return (
-      <span
-        className={cn(
-          "shrink-0 overflow-hidden bg-elevated",
-          layout === "grid" ? "size-12 rounded-lg" : "size-9 rounded-md",
-        )}
-      >
+      <span className="size-12 shrink-0 overflow-hidden rounded-lg bg-elevated">
         <img src={url} alt="" className="size-full object-cover" />
       </span>
     );
@@ -695,23 +834,17 @@ function PreviewSheet({
   return (
     <div className="space-y-4">
       <h3 className="truncate font-serif text-2xl italic">{node.name}</h3>
-      <p className="text-sm text-muted">{formatBytes(node.size)} · syncs with every other file in a Syncing folder</p>
-      {url && kind === "image" ? (
-        <img src={url} alt={node.name} className="max-h-80 w-full rounded-lg object-contain bg-elevated" />
-      ) : null}
-      {url && kind === "video" ? (
-        <video src={url} controls className="max-h-80 w-full rounded-lg bg-elevated" />
-      ) : null}
+      <p className="text-sm text-muted">
+        {kindLabel(kind)} · {formatBytes(node.size)} · {formatWhen(node.updatedAt)}
+      </p>
+      {url && kind === "image" ? <img src={url} alt={node.name} className="max-h-80 w-full rounded-lg bg-elevated object-contain" /> : null}
+      {url && kind === "video" ? <video src={url} controls className="max-h-80 w-full rounded-lg bg-elevated" /> : null}
       {url && kind === "audio" ? <audio src={url} controls className="w-full" /> : null}
       <div className="flex justify-end gap-2">
         <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
           Close
         </button>
-        <button
-          type="button"
-          className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
-          onClick={onGet}
-        >
+        <button type="button" className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground" onClick={onGet}>
           Download
         </button>
       </div>
@@ -722,11 +855,15 @@ function PreviewSheet({
 function FolderGrid({
   layout,
   mode,
+  view,
   items,
   over,
   selected,
   menuFor,
-  onSelect,
+  sortKey,
+  sortDir,
+  onSort,
+  onPick,
   onMenu,
   onOpen,
   onPreview,
@@ -736,14 +873,21 @@ function FolderGrid({
   onShare,
   onSync,
   onTrash,
+  onRename,
+  onRestore,
+  onPurge,
 }: {
   layout: Layout;
   mode: StoreMode;
+  view: View;
   items: PotionNode[];
   over: boolean;
-  selected: string | null;
+  selected: string[];
   menuFor: string | null;
-  onSelect: (id: string | null) => void;
+  sortKey: SortKey;
+  sortDir: SortDir;
+  onSort: (k: SortKey) => void;
+  onPick: (n: PotionNode, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => void;
   onMenu: (id: string | null) => void;
   onOpen: (n: PotionNode) => void;
   onPreview: (n: PotionNode) => void;
@@ -753,6 +897,9 @@ function FolderGrid({
   onShare: (n: PotionNode) => void;
   onSync: (n: PotionNode) => void;
   onTrash: (n: PotionNode) => void;
+  onRename: (n: PotionNode) => void;
+  onRestore: (n: PotionNode) => void;
+  onPurge: (n: PotionNode) => void;
 }) {
   const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const menuItem = items.find((i) => i.id === menuFor) ?? null;
@@ -781,73 +928,90 @@ function FolderGrid({
   if (items.length === 0) {
     return (
       <p className={cn("py-16 text-center text-muted", over && "rounded-xl outline-dashed outline-1 outline-accent")}>
-        Empty. Add photos, videos, PDFs, zips — any file. Apps lives here too.
+        {view === "trash" ? "Trash is empty." : "Empty. Drop photos, videos, PDFs, zips — any file."}
       </p>
     );
   }
-  const current = items.find((i) => i.id === selected) ?? null;
+
+  const cols: { key: SortKey; className: string }[] = [
+    { key: "name", className: "min-w-0 flex-1 text-left" },
+    { key: "date", className: "hidden w-44 shrink-0 text-left md:block" },
+    { key: "type", className: "hidden w-32 shrink-0 text-left lg:block" },
+    { key: "size", className: "hidden w-24 shrink-0 text-right md:block" },
+  ];
+
   return (
     <div className="flex flex-col gap-3">
-      {current ? (
-        <div className="flex flex-wrap items-center gap-1 rounded-xl bg-card p-2 shadow-[var(--shadow-border)]">
-          <p className="min-w-0 flex-1 truncate px-2 text-sm font-medium">{current.name}</p>
-          <ExplorerButtons node={current} onGet={onGet} onCopy={onCopy} onMove={onMove} onShare={onShare} onSync={onSync} onTrash={onTrash} />
+      {layout === "list" ? (
+        <div className="flex items-center gap-2 px-3 text-xs text-muted">
+          <span className="size-5 shrink-0" />
+          {cols.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => onSort(c.key)}
+              className={cn("inline-flex h-9 items-center gap-1 hover:text-foreground", c.className)}
+            >
+              {SORT_LABEL[c.key]}
+              <SortGlyph active={sortKey === c.key} dir={sortDir} />
+            </button>
+          ))}
+          <span className="w-11 shrink-0" />
         </div>
       ) : null}
       <ul
         className={cn(
-          layout === "grid"
-            ? "grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4"
-            : "flex flex-col gap-1",
+          layout === "grid" ? "grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" : "flex flex-col gap-1",
           over && "rounded-xl outline-dashed outline-1 outline-accent",
         )}
       >
         {items.map((item) => {
-          const on = selected === item.id;
-          const kind = item.kind === "file" ? fileKind(item.mime, item.name) : null;
-          const meta =
-            item.kind === "folder"
-              ? item.synced === false
-                ? "Not syncing"
-                : "Syncing"
-              : `${kind === "image" ? "Photo" : kind === "video" ? "Video" : kind === "audio" ? "Audio" : kind === "pdf" ? "PDF" : kind === "zip" ? "Archive" : "File"} · ${formatBytes(item.size)}`;
+          const on = selected.includes(item.id);
+          const kind = item.kind === "file" ? fileKind(item.mime, item.name) : "folder";
           return (
             <li key={item.id}>
               <article
                 className={cn(
                   "rounded-xl bg-card shadow-[var(--shadow-border)]",
                   on && "ring-2 ring-foreground/30",
-                  layout === "grid"
-                    ? "relative flex min-h-32 flex-col overflow-visible p-3"
-                    : "flex items-center gap-2 px-3 py-1.5",
+                  layout === "grid" ? "relative flex min-h-32 flex-col overflow-visible p-3" : "flex items-center gap-2 px-3 py-1.5",
                 )}
               >
                 <button
                   type="button"
                   className={cn(
                     "min-w-0 text-left",
-                    layout === "grid"
-                      ? "flex flex-1 flex-col items-start gap-2 pr-8"
-                      : "flex min-h-11 flex-1 items-center gap-3",
+                    layout === "grid" ? "flex flex-1 flex-col items-start gap-2 pr-8" : "flex min-h-11 min-w-0 flex-1 items-center gap-3",
                   )}
-                  onClick={() => {
+                  onClick={(e) => {
                     onMenu(null);
-                    if (item.kind === "folder") onOpen(item);
-                    else onPreview(item);
+                    if (e.detail === 2) {
+                      if (item.kind === "folder") onOpen(item);
+                      else onPreview(item);
+                      return;
+                    }
+                    onPick(item, e);
+                    if (item.kind === "folder" && !e.shiftKey && !e.metaKey && !e.ctrlKey && layout === "grid") onOpen(item);
                   }}
                 >
                   <NodeGlyph node={item} mode={mode} layout={layout} />
-                  <span className="min-w-0 w-full">
-                    <p className="truncate text-sm font-medium">{item.name}</p>
-                    <p className="text-xs text-faint">{meta}</p>
+                  <span className={cn("min-w-0", layout === "list" && "flex min-w-0 flex-1 items-center gap-3")}>
+                    <span className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{item.name}</p>
+                      {layout === "grid" ? (
+                        <p className="text-xs text-faint">
+                          {item.kind === "folder" ? (item.synced === false ? "Not syncing" : "Syncing") : `${kindLabel(kind)} · ${formatBytes(item.size)}`}
+                        </p>
+                      ) : null}
+                    </span>
+                    {layout === "list" ? (
+                      <>
+                        <span className="hidden w-44 shrink-0 truncate text-xs text-faint md:block">{formatWhen(item.updatedAt)}</span>
+                        <span className="hidden w-32 shrink-0 truncate text-xs text-faint lg:block">{typeLabel(item.kind, item.mime, item.name)}</span>
+                        <span className="hidden w-24 shrink-0 text-right text-xs text-faint md:block">{item.kind === "folder" ? "—" : formatBytes(item.size)}</span>
+                      </>
+                    ) : null}
                   </span>
-                  {layout === "list" && item.kind === "folder" ? (
-                    item.synced === false ? (
-                      <CloudOff className="size-3.5 shrink-0 text-faint" strokeWidth={1.75} />
-                    ) : (
-                      <Cloud className="size-3.5 shrink-0 text-faint" strokeWidth={1.75} />
-                    )
-                  ) : null}
                 </button>
                 <button
                   ref={(el) => {
@@ -861,7 +1025,7 @@ function FolderGrid({
                   )}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onSelect(item.id);
+                    onPick(item, e);
                     onMenu(menuFor === item.id ? null : item.id);
                   }}
                 >
@@ -876,6 +1040,7 @@ function FolderGrid({
         ? createPortal(
             <ActionMenu
               item={menuItem}
+              view={view}
               anchor={anchor}
               onOpen={onOpen}
               onGet={onGet}
@@ -884,6 +1049,9 @@ function FolderGrid({
               onShare={onShare}
               onSync={onSync}
               onTrash={onTrash}
+              onRename={onRename}
+              onRestore={onRestore}
+              onPurge={onPurge}
             />,
             document.body,
           )
@@ -894,6 +1062,7 @@ function FolderGrid({
 
 function ActionMenu({
   item,
+  view,
   anchor,
   onOpen,
   onGet,
@@ -902,8 +1071,12 @@ function ActionMenu({
   onShare,
   onSync,
   onTrash,
+  onRename,
+  onRestore,
+  onPurge,
 }: {
   item: PotionNode;
+  view: View;
   anchor: HTMLButtonElement;
   onOpen: (n: PotionNode) => void;
   onGet: (n: PotionNode) => void;
@@ -912,80 +1085,39 @@ function ActionMenu({
   onShare: (n: PotionNode) => void;
   onSync: (n: PotionNode) => void;
   onTrash: (n: PotionNode) => void;
+  onRename: (n: PotionNode) => void;
+  onRestore: (n: PotionNode) => void;
+  onPurge: (n: PotionNode) => void;
 }) {
   const [pos, setPos] = useState({ top: 0, left: 0 });
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect();
     const width = 192;
     const left = Math.min(Math.max(8, r.right - width), window.innerWidth - width - 8);
-    const top = Math.min(r.bottom + 4, window.innerHeight - 280);
+    const top = Math.min(r.bottom + 4, window.innerHeight - 320);
     setPos({ top, left });
   }, [anchor]);
   return (
-    <div
-      id="potion-action-menu"
-      role="menu"
-      style={{ top: pos.top, left: pos.left }}
-      className="fixed z-50 w-48 rounded-xl bg-card p-1 shadow-[var(--shadow-border)]"
-    >
-      {item.kind === "folder" ? (
-        <MenuRow label="Open" onClick={() => onOpen(item)} />
+    <div id="potion-action-menu" role="menu" style={{ top: pos.top, left: pos.left }} className="fixed z-50 w-48 rounded-xl bg-card p-1 shadow-[var(--shadow-border)]">
+      {view === "trash" ? (
+        <>
+          <MenuRow label="Restore" onClick={() => onRestore(item)} />
+          <MenuRow label="Delete forever" onClick={() => onPurge(item)} danger />
+        </>
       ) : (
-        <MenuRow label="Download" onClick={() => onGet(item)} />
+        <>
+          {item.kind === "folder" ? <MenuRow label="Open" onClick={() => onOpen(item)} /> : <MenuRow label="Download" onClick={() => onGet(item)} />}
+          <MenuRow label="Rename" onClick={() => onRename(item)} />
+          <MenuRow label="Make a copy" onClick={() => onCopy(item)} />
+          <MenuRow label="Move" onClick={() => onMove(item)} />
+          <MenuRow label="Share" onClick={() => onShare(item)} />
+          {item.kind === "folder" ? (
+            <MenuRow label={item.synced === false ? "Sync folder" : "Don't sync"} onClick={() => onSync(item)} />
+          ) : null}
+          <MenuRow label="Move to trash" onClick={() => onTrash(item)} danger />
+        </>
       )}
-      <MenuRow label="Make a copy" onClick={() => onCopy(item)} />
-      <MenuRow label="Move" onClick={() => onMove(item)} />
-      <MenuRow label="Share" onClick={() => onShare(item)} />
-      {item.kind === "folder" ? (
-        <MenuRow label={item.synced === false ? "Sync folder" : "Don't sync"} onClick={() => onSync(item)} />
-      ) : null}
-      <MenuRow label="Delete" onClick={() => onTrash(item)} danger />
     </div>
-  );
-}
-
-function ExplorerButtons({
-  node,
-  onGet,
-  onCopy,
-  onMove,
-  onShare,
-  onSync,
-  onTrash,
-}: {
-  node: PotionNode;
-  onGet: (n: PotionNode) => void;
-  onCopy: (n: PotionNode) => void;
-  onMove: (n: PotionNode) => void;
-  onShare: (n: PotionNode) => void;
-  onSync: (n: PotionNode) => void;
-  onTrash: (n: PotionNode) => void;
-}) {
-  const btn = "grid size-11 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-foreground";
-  return (
-    <>
-      {node.kind === "file" ? (
-        <button type="button" title="Download" className={btn} onClick={() => onGet(node)}>
-          <FileText className="size-4" strokeWidth={1.75} />
-        </button>
-      ) : (
-        <button type="button" title={node.synced === false ? "Sync folder" : "Don't sync"} className={btn} onClick={() => onSync(node)}>
-          {node.synced === false ? <CloudOff className="size-4" strokeWidth={1.75} /> : <Cloud className="size-4" strokeWidth={1.75} />}
-        </button>
-      )}
-      <button type="button" title="Make a copy" className={btn} onClick={() => onCopy(node)}>
-        <Copy className="size-4" strokeWidth={1.75} />
-      </button>
-      <button type="button" title="Move" className={btn} onClick={() => onMove(node)}>
-        <FolderInput className="size-4" strokeWidth={1.75} />
-      </button>
-      <button type="button" title="Share" className={btn} onClick={() => onShare(node)}>
-        <Share2 className="size-4" strokeWidth={1.75} />
-      </button>
-      <button type="button" title="Delete" className={btn} onClick={() => onTrash(node)}>
-        <Trash2 className="size-4" strokeWidth={1.75} />
-      </button>
-    </>
   );
 }
 
@@ -1018,15 +1150,11 @@ function MoveSheet({
   return (
     <div className="space-y-4">
       <h3 className="font-serif text-2xl italic">Move {name}</h3>
-      <p className="text-sm text-muted">Pick a folder. Same idea as Drive — the file changes house, it is not copied.</p>
+      <p className="text-sm text-muted">Pick a folder. The file changes house, it is not copied.</p>
       <ul className="max-h-64 space-y-1 overflow-auto">
         {targets.map((t) => (
           <li key={t.id ?? "root"}>
-            <button
-              type="button"
-              onClick={() => onPick(t.id)}
-              className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm hover:bg-elevated"
-            >
+            <button type="button" onClick={() => onPick(t.id)} className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm hover:bg-elevated">
               <Folder className="size-4 text-muted" strokeWidth={1.6} />
               <span className="truncate">{t.path}</span>
             </button>
@@ -1042,28 +1170,14 @@ function MoveSheet({
   );
 }
 
-function ShareSheet({
-  name,
-  url,
-  onCopy,
-  onClose,
-}: {
-  name: string;
-  url: string;
-  onCopy: () => void;
-  onClose: () => void;
-}) {
+function ShareSheet({ name, url, onCopy, onClose }: { name: string; url: string; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="space-y-4">
       <h3 className="font-serif text-2xl italic">Share {name}</h3>
-      <p className="text-sm text-muted">Anyone with the link can view. No Google account needed on their side.</p>
+      <p className="text-sm text-muted">Anyone with the link can view. No account needed on their side.</p>
       <div className="flex items-center gap-2 rounded-xl bg-elevated p-2">
         <code className="min-w-0 flex-1 truncate px-2 font-mono text-xs">{url}</code>
-        <button
-          type="button"
-          onClick={onCopy}
-          className="inline-flex h-11 items-center gap-1 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
-        >
+        <button type="button" onClick={onCopy} className="inline-flex h-11 items-center gap-1 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">
           <Link2 className="size-3.5" strokeWidth={1.75} />
           Copy link
         </button>
@@ -1077,157 +1191,7 @@ function ShareSheet({
   );
 }
 
-function AppModule({
-  name,
-  label,
-  files,
-  restored,
-  busy,
-  onSave,
-  onRestore,
-}: {
-  name: string;
-  label: string;
-  files: PotionNode[];
-  restored: RestoreRecord | null;
-  busy: boolean;
-  onSave: () => void;
-  onRestore: (n: PotionNode) => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-border bg-card p-4">
-      <p className="text-xs uppercase tracking-widest text-muted">{name}</p>
-      <p className="mt-1 text-sm text-muted">This app drops files here. Potion only carries them.</p>
-      {restored ? (
-        <p className="mt-3 text-sm">
-          Last hand-off: <span className="font-medium">{restored.fileName}</span>
-        </p>
-      ) : null}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={onSave}
-        className="mt-4 inline-flex h-11 items-center gap-2 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground disabled:opacity-60"
-      >
-        <Save className="size-4" strokeWidth={1.75} />
-        {label}
-      </button>
-      {files.length ? (
-        <ul className="mt-4 space-y-2">
-          {files.map((f) => (
-            <li key={f.id} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-elevated px-3 py-2">
-              <span className="min-w-0 truncate text-sm">{f.name}</span>
-              <button
-                type="button"
-                className="inline-flex h-11 shrink-0 items-center gap-1 rounded-full px-3 text-sm text-muted hover:text-foreground"
-                onClick={() => onRestore(f)}
-              >
-                <RotateCcw className="size-3.5" strokeWidth={1.75} />
-                Open in app
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-function AppsPanel({
-  apps,
-  space,
-  onOpen,
-  onAdd,
-  onRemove,
-  onCopy,
-}: {
-  apps: ConnectedApp[];
-  space: string;
-  onOpen: (app: ConnectedApp) => void;
-  onAdd: (name: string) => void;
-  onRemove: (name: string) => void;
-  onCopy: () => void;
-}) {
-  const [name, setName] = useState("");
-  return (
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-5">
-      <p className="text-sm text-muted">
-        No stock apps. Type a name. Potion makes a folder inside <span className="text-foreground">Apps</span>.
-        That Apps folder lives in Folder — open it to manage the files. Remove a name from this list anytime —
-        the folder stays until you delete it.
-      </p>
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const next = name.trim();
-          if (!next) return;
-          onAdd(next);
-          setName("");
-        }}
-      >
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="App name"
-          className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-card px-3 text-sm"
-        />
-        <button
-          type="submit"
-          className="inline-flex h-11 items-center gap-1 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
-        >
-          <Plus className="size-4" strokeWidth={1.75} />
-          Add
-        </button>
-      </form>
-      <div className="rounded-xl bg-card px-4 py-3 shadow-[var(--shadow-border)]">
-        <p className="text-xs text-muted">Potion key for the next vibe app. Not a login.</p>
-        <div className="mt-2 flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate font-mono text-sm">{space}</code>
-          <button
-            type="button"
-            onClick={onCopy}
-            className="inline-flex h-11 items-center gap-1 rounded-full border border-border px-3 text-sm"
-          >
-            <Copy className="size-3.5" strokeWidth={1.75} />
-            Copy
-          </button>
-        </div>
-      </div>
-      {apps.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted">Empty list. Add one above.</p>
-      ) : (
-        <ul className="space-y-2">
-          {apps.map((a) => (
-            <li key={a.id} className="flex items-center gap-2 rounded-xl bg-card px-3 py-2 shadow-[var(--shadow-border)]">
-              <button
-                type="button"
-                onClick={() => onOpen(a)}
-                className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left"
-              >
-                <Blocks className="size-5 text-muted" strokeWidth={1.6} />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{a.name}</p>
-                  <p className="text-xs text-faint">{a.files ? `${a.files} files` : "Folder"}</p>
-                </div>
-              </button>
-              <button
-                type="button"
-                title="Remove from list"
-                className="grid size-11 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-destructive"
-                onClick={() => onRemove(a.name)}
-              >
-                <Trash2 className="size-4" strokeWidth={1.75} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
+function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMode; used: number }) {
   const [job, setJob] = useState<SyncState>(() => ({
     status: "idle",
     progress: 0,
@@ -1240,19 +1204,17 @@ function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
   useEffect(() => subscribeSync(setJob), []);
   const running = job.status === "running";
   const paused = job.status === "paused";
-  const btn =
-    "inline-flex h-11 items-center gap-2 rounded-full border border-border px-4 text-sm disabled:opacity-40";
+  const btn = "inline-flex h-11 items-center gap-2 rounded-full border border-border px-4 text-sm disabled:opacity-40";
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-6 text-sm text-muted">
       <section className="space-y-4 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">Sync</h2>
-        <p>
-          Start walks folders marked Syncing. Pause holds the line. Stop clears it. Retry starts over.
-        </p>
+        <p>Start walks folders marked Syncing. Pause holds the line. Stop clears it. Retry starts over.</p>
+        <p className="font-mono text-xs text-faint tabular-nums">{formatBytes(used)} {signedIn ? "in the locker" : "on this device"}</p>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            className={cn(btn, (running || paused) && "bg-accent text-accent-foreground border-transparent")}
+            className={cn(btn, (running || paused) && "border-transparent bg-accent text-accent-foreground")}
             disabled={running}
             onClick={() => void startSync(mode)}
           >
@@ -1267,12 +1229,7 @@ function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
             <Square className="size-3.5" strokeWidth={1.75} />
             Stop
           </button>
-          <button
-            type="button"
-            className={btn}
-            disabled={running}
-            onClick={() => void retrySync(mode)}
-          >
+          <button type="button" className={btn} disabled={running} onClick={() => void retrySync(mode)}>
             <RotateCcw className="size-3.5" strokeWidth={1.75} />
             Retry
           </button>
@@ -1289,39 +1246,29 @@ function SyncPanel({ signedIn, mode }: { signedIn: boolean; mode: StoreMode }) {
         <h2 className="text-foreground">How to use it</h2>
         <ol className="list-decimal space-y-2 pl-4">
           <li>
-            <span className="text-foreground">Folder</span> is the box. Drop photos, videos, music, PDFs, zips,
-            docs — every file type. Same as Dropbox, without the bill.
+            <span className="text-foreground">Folder</span> is the box. Drop photos, videos, music, PDFs, zips, docs — any file.
           </li>
           <li>
-            <span className="text-foreground">Apps</span> is not a second box. It is a real folder named Apps
-            inside Folder. Add a name here (Finance Manager, Atrium, …) and Potion makes that subfolder for
-            the other app to park backups. Open the name to jump there.
+            Sort like a file explorer: click <span className="text-foreground">Name</span>, <span className="text-foreground">Date modified</span>,{" "}
+            <span className="text-foreground">Type</span>, or <span className="text-foreground">Size</span>. Click again to reverse. Folders stay on top.
           </li>
           <li>
-            <span className="text-foreground">Sync</span> is the copy button, not another place for files.
-            Start copies every file in folders marked Syncing — pictures included. Pause holds. Stop clears.
-            Retry starts over. A folder set to “Don’t sync” is skipped.
+            Search from the bar. Rename from the menu or F2. Trash is a real bin — restore or empty it.
           </li>
           <li>
-            No account: files stay on <span className="text-foreground">this</span> phone or computer.
+            A folder marked <span className="text-foreground">Syncing</span> goes to the locker. Don’t sync keeps it on this device.
           </li>
           <li>
-            Sign in, then Start: this device pushes into your locker and the locker pulls onto this device.
-            Same key on another phone or PC = same files.
+            Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Files over 8 MB stay here.
           </li>
         </ol>
         <p className="flex items-start gap-2 pt-1">
           <Smartphone className="mt-0.5 size-4 shrink-0 text-faint" strokeWidth={1.75} />
-          <span>
-            The phone app is not a duplicate of Sync. It is another window on the same box. Use Folder to
-            manage files on the phone, Apps for other apps’ folders, Sync when you want the locker copy.
-          </span>
+          <span>The phone app is another window on the same box, not a second Sync.</span>
         </p>
       </section>
       <p className="font-serif text-3xl italic text-foreground">Like a lunchbox.</p>
-      <p>
-        Potion is a box for files. You can use it on the web, on a phone, or on a computer. Same box.
-      </p>
+      <p>Potion is a box for files. Web, phone, or computer. Same box.</p>
       <section className="space-y-2 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">You do not need an account</h2>
         <p>

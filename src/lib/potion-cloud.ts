@@ -60,31 +60,6 @@ function mapNode(r: NodeRow): CloudNode {
   };
 }
 
-async function folderByName(
-  sql: Awaited<ReturnType<typeof getSql>>,
-  userId: string,
-  parentId: string | null,
-  name: string,
-) {
-  const rows = parentId
-    ? await sql<{ id: string }>`
-        select id from potion_nodes
-        where user_id = ${userId} and parent_id = ${parentId} and name = ${name}
-          and kind = 'folder' and deleted_at is null
-        limit 1`
-    : await sql<{ id: string }>`
-        select id from potion_nodes
-        where user_id = ${userId} and parent_id is null and name = ${name}
-          and kind = 'folder' and deleted_at is null
-        limit 1`;
-  if (rows[0]) return rows[0].id;
-  const id = nid();
-  await sql`
-    insert into potion_nodes (id, user_id, parent_id, name, kind, size)
-    values (${id}, ${userId}, ${parentId}, ${name}, 'folder', 0)`;
-  return id;
-}
-
 export const ensureCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -94,16 +69,22 @@ export const ensureCloud = createServerFn({ method: "POST" })
       where user_id = ${context.userId} and parent_id is null and name = 'Apps'
         and kind = 'folder' and deleted_at is null
       limit 1`;
-    if (!apps[0]) {
-      const id = nid();
-      await sql`
-        insert into potion_nodes (id, user_id, parent_id, name, kind, size)
-        values (${id}, ${context.userId}, ${null}, ${"Apps"}, 'folder', 0)`;
+    if (apps[0]) {
+      const kids = await sql<{ name: string }>`
+        select name from potion_nodes
+        where user_id = ${context.userId} and parent_id = ${apps[0].id} and deleted_at is null`;
+      const leftover =
+        kids.length === 0 ||
+        kids.some((k) => ["Finance Manager", "Atrium", "Font Manager"].includes(k.name));
+      if (leftover) {
+        await sql`
+          update potion_nodes set parent_id = null, updated_at = now()
+          where user_id = ${context.userId} and parent_id = ${apps[0].id} and deleted_at is null`;
+        await sql`
+          update potion_nodes set deleted_at = now(), updated_at = now()
+          where id = ${apps[0].id} and user_id = ${context.userId}`;
+      }
     }
-    await sql`
-      update potion_nodes set deleted_at = now(), updated_at = now()
-      where user_id = ${context.userId} and parent_id is null and deleted_at is null
-        and kind = 'folder' and name in ('Documents', 'Photos')`;
     return { ok: true as const };
   });
 
@@ -224,16 +205,6 @@ export const getCloud = createServerFn({ method: "GET" })
     const row = rows[0];
     if (!row) return null;
     return { name: row.name, mime: row.mime, content: row.content ?? "", size: Number(row.size) || 0 };
-  });
-
-export const appFolderCloud = createServerFn({ method: "POST" })
-  .validator((d: { app: string; leaf: string }) => d)
-  .middleware([authMiddleware])
-  .handler(async ({ context, data }) => {
-    const sql = await getSql();
-    const app = await folderByName(sql, context.userId, null, data.app);
-    const leaf = await folderByName(sql, context.userId, app, data.leaf);
-    return { id: leaf };
   });
 
 export const copyCloud = createServerFn({ method: "POST" })
@@ -374,6 +345,91 @@ export const listTargetsCloud = createServerFn({ method: "GET" })
         .filter((r) => !blocked.has(r.id))
         .map((r) => ({ id: r.id as string | null, name: r.name, path: pathOf(r.id) })),
     ];
+  });
+
+export const renameCloud = createServerFn({ method: "POST" })
+  .validator((d: { id: string; name: string }) => ({ id: d.id, name: d.name.trim() || "Untitled" }))
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    await sql`
+      update potion_nodes set name = ${data.name}, updated_at = now()
+      where id = ${data.id} and user_id = ${context.userId} and deleted_at is null`;
+    return { ok: true as const };
+  });
+
+export const searchCloud = createServerFn({ method: "GET" })
+  .validator((q: string) => q)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: q }) => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return [] as CloudNode[];
+    const sql = await getSql();
+    const rows = await sql<NodeRow>`
+      select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced
+      from potion_nodes
+      where user_id = ${context.userId} and deleted_at is null
+      order by updated_at desc`;
+    return rows.map(mapNode).filter((n) => n.name.toLowerCase().includes(needle)).slice(0, 80);
+  });
+
+export const usedBytesCloud = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const rows = await sql<{ bytes: string | number | null }>`
+      select coalesce(sum(size), 0) as bytes from potion_nodes
+      where user_id = ${context.userId} and kind = 'file' and deleted_at is null`;
+    return { bytes: Number(rows[0]?.bytes) || 0 };
+  });
+
+export const listTrashCloud = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const rows = await sql<NodeRow>`
+      select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced
+      from potion_nodes
+      where user_id = ${context.userId} and deleted_at is not null
+      order by deleted_at desc`;
+    const all = rows.map(mapNode);
+    const deleted = new Set(all.map((n) => n.id));
+    return all.filter((n) => !n.parentId || !deleted.has(n.parentId));
+  });
+
+export const restoreCloud = createServerFn({ method: "POST" })
+  .validator((id: string) => id)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: id }) => {
+    const sql = await getSql();
+    const rows = await sql<{ deleted_at: string | null }>`
+      select deleted_at from potion_nodes where id = ${id} and user_id = ${context.userId} limit 1`;
+    const stamp = rows[0]?.deleted_at;
+    if (!stamp) return { ok: true as const };
+    await sql`
+      update potion_nodes set deleted_at = null, updated_at = now()
+      where user_id = ${context.userId} and deleted_at = ${stamp}
+        and (id = ${id} or parent_id = ${id})`;
+    return { ok: true as const };
+  });
+
+export const purgeCloud = createServerFn({ method: "POST" })
+  .validator((id: string) => id)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: id }) => {
+    const sql = await getSql();
+    await sql`
+      delete from potion_nodes
+      where user_id = ${context.userId} and (id = ${id} or parent_id = ${id})`;
+    return { ok: true as const };
+  });
+
+export const emptyTrashCloud = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    await sql`delete from potion_nodes where user_id = ${context.userId} and deleted_at is not null`;
+    return { ok: true as const };
   });
 
 export { toB64, fromB64 };

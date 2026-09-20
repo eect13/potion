@@ -11,20 +11,6 @@ export type TreeEntry = {
   parentPath: string;
 };
 
-export type RestoreRecord = {
-  id: string;
-  fileName: string;
-  deviceKind: string;
-  restoredAt: string;
-};
-
-export type ConnectedApp = {
-  id: string;
-  name: string;
-  folderId: string;
-  files: number;
-};
-
 async function fileToB64(file: Blob) {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -72,6 +58,14 @@ export async function listNodes(mode: StoreMode, parentId: string | null) {
   return db.listChildren(parentId);
 }
 
+export async function listTrash(mode: StoreMode) {
+  if (mode === "cloud") return cloud.listTrashCloud();
+  await db.ensureSeeded();
+  const all = await db.listChildren(null, true);
+  const deleted = new Set(all.map((n) => n.id));
+  return all.filter((n) => !n.parentId || !deleted.has(n.parentId));
+}
+
 export async function pathOf(mode: StoreMode, id: string | null) {
   if (mode === "cloud") return cloud.pathCloud({ data: id });
   return db.pathOf(id);
@@ -80,6 +74,24 @@ export async function pathOf(mode: StoreMode, id: string | null) {
 export async function mkdir(mode: StoreMode, parentId: string | null, name: string) {
   if (mode === "cloud") return cloud.mkdirCloud({ data: { parentId, name } });
   return db.mkdir(parentId, name);
+}
+
+export async function renameNode(mode: StoreMode, id: string, name: string) {
+  if (mode === "cloud") return cloud.renameCloud({ data: { id, name } });
+  return db.rename(id, name);
+}
+
+export async function searchNodes(mode: StoreMode, q: string) {
+  if (mode === "cloud") return cloud.searchCloud({ data: q });
+  return db.search(q);
+}
+
+export async function usedBytes(mode: StoreMode) {
+  if (mode === "cloud") {
+    const r = await cloud.usedBytesCloud();
+    return r.bytes;
+  }
+  return db.usedBytes();
 }
 
 export async function collectTree(
@@ -145,6 +157,21 @@ export async function trashNode(mode: StoreMode, id: string) {
   return db.trash(id);
 }
 
+export async function restoreNode(mode: StoreMode, id: string) {
+  if (mode === "cloud") return cloud.restoreCloud({ data: id });
+  return db.restore(id);
+}
+
+export async function purgeNode(mode: StoreMode, id: string) {
+  if (mode === "cloud") return cloud.purgeCloud({ data: id });
+  return db.purge(id);
+}
+
+export async function emptyTrash(mode: StoreMode) {
+  if (mode === "cloud") return cloud.emptyTrashCloud();
+  return db.emptyTrash();
+}
+
 export async function copyNode(mode: StoreMode, id: string, destParentId: string | null) {
   if (mode === "cloud") return cloud.copyCloud({ data: { id, destParentId } });
   return db.copyNode(id, destParentId);
@@ -201,38 +228,4 @@ export async function putCloudFile(parentPath: string, name: string, mime: strin
     parentPath.split("/").filter(Boolean),
   );
   await putFiles("cloud", parentId, [asFile(name, mime, bytes)]);
-}
-
-export function spaceKey() {
-  return "";
-}
-
-export function lastRestore(): RestoreRecord | null {
-  return null;
-}
-
-export async function connectedApps(_mode: StoreMode): Promise<ConnectedApp[]> {
-  return [];
-}
-
-export async function addConnectedApp(_mode: StoreMode, _name: string) {
-  throw new Error("Apps was removed. Use Folder.");
-}
-
-export async function removeConnectedApp(_name: string) {}
-
-export async function ensureAppFolder(_mode: StoreMode, _name: string) {
-  return "";
-}
-
-export async function listAppBackups(_mode: StoreMode, _app: string) {
-  return { folderId: "", files: [] as PotionNode[] };
-}
-
-export async function saveAppBackup(_mode: StoreMode, _app: string, _payload: string) {
-  throw new Error("Apps was removed. Use Folder.");
-}
-
-export async function restoreBackup(_mode: StoreMode, _id: string, _device: string) {
-  throw new Error("Apps was removed. Use Folder.");
 }

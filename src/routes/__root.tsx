@@ -30,7 +30,7 @@ export const Route = createRootRoute({
       { name: "theme-color", content: "#0a0b0a" },
       {
         name: "description",
-        content: "A folder for your apps. Login optional. Sync only if you want it.",
+        content: "A free Dropbox-style folder. Login optional. Sync only if you want it.",
       },
     ],
     links: [

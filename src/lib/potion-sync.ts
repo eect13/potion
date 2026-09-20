@@ -14,6 +14,8 @@ export type SyncState = {
   skipped: number;
 };
 
+const LOCKER_MAX = 8 * 1024 * 1024;
+
 type Job = {
   action: "index" | "upload" | "download";
   label: string;
@@ -80,6 +82,11 @@ function jobsFromTree(tree: TreeEntry[], action: Job["action"], source: StoreMod
     }));
 }
 
+function sameFile(a: TreeEntry, b: TreeEntry) {
+  if (a.node.hash && b.node.hash) return a.node.hash === b.node.hash;
+  return a.node.size === b.node.size;
+}
+
 async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
   const localTree = await api.collectTree("local");
   if (nextMode !== "cloud") {
@@ -97,16 +104,16 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
   const uploading = new Set<string>();
   for (const [path, local] of localFiles) {
     const remote = cloudFiles.get(path);
-    if (!remote || remote.node.size !== local.node.size) {
-      if (!remote || local.node.updatedAt >= remote.node.updatedAt) {
-        out.push(...jobsFromTree([local], "upload", "local"));
-        uploading.add(path);
-      }
+    if (remote && sameFile(local, remote)) continue;
+    if (!remote || local.node.updatedAt >= remote.node.updatedAt) {
+      out.push(...jobsFromTree([local], "upload", "local"));
+      uploading.add(path);
     }
   }
   for (const [path, remote] of cloudFiles) {
     if (uploading.has(path)) continue;
     const local = localFiles.get(path);
+    if (local && sameFile(local, remote)) continue;
     if (!local || local.node.size !== remote.node.size) {
       out.push(...jobsFromTree([remote], "download", "cloud"));
     }
@@ -116,6 +123,9 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
 
 async function runJob(job: Job) {
   if (job.action === "index") return;
+  if (job.action === "upload" && job.size > LOCKER_MAX) {
+    throw new Error("File too large (8 MB).");
+  }
   const file = await api.getFile(job.source, job.nodeId);
   if (!file) throw new Error(`Missing ${job.name}`);
   if (job.action === "upload") {
@@ -237,4 +247,10 @@ export function stopSync() {
 export async function retrySync(nextMode: StoreMode) {
   stopSync();
   await startSync(nextMode);
+}
+
+export function maybeAutoSync(nextMode: StoreMode) {
+  if (nextMode !== "cloud") return;
+  if (state.status === "running" || state.status === "paused") return;
+  void startSync(nextMode);
 }

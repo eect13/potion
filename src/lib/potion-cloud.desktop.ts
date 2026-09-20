@@ -14,6 +14,13 @@ export const moveCloud = unavailable;
 export const syncCloud = unavailable;
 export const shareCloud = unavailable;
 export const listTargetsCloud = unavailable;
+export const renameCloud = unavailable;
+export const searchCloud = unavailable;
+export const usedBytesCloud = unavailable;
+export const listTrashCloud = unavailable;
+export const restoreCloud = unavailable;
+export const purgeCloud = unavailable;
+export const emptyTrashCloud = unavailable;
 
 export function toB64(s: string) {
   return btoa(unescape(encodeURIComponent(s)));

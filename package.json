@@ -1,6 +1,6 @@
 {
   "name": "potion",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Potion — a free Dropbox-style folder. Login optional.",
   "private": true,
   "sideEffects": false,

@@ -594,39 +594,35 @@ export async function stripWelcome() {
   }
 }
 
-const DROP_ROOT = new Set(["Documents", "Photos"]);
-const EMPTY_STOCK = new Set(["Finance Manager", "Atrium", "Font Manager"]);
-export const APPS_FOLDER_NAME = "Apps";
+const OLD_APP_MODULES = new Set(["Finance Manager", "Atrium", "Font Manager"]);
 
-async function folderHasFiles(id: string): Promise<boolean> {
-  const kids = await listChildren(id);
-  if (kids.some((k) => k.kind === "file")) return true;
-  for (const k of kids.filter((x) => x.kind === "folder")) {
-    if (await folderHasFiles(k.id)) return true;
-  }
-  return false;
-}
-
-export async function ensureAppsFolder() {
-  const root = await listChildren(null);
-  const found = root.find((n) => n.kind === "folder" && n.name === APPS_FOLDER_NAME);
-  if (found) return found;
-  return mkdir(null, APPS_FOLDER_NAME);
-}
-
-/** Drop leftover stock Documents/Photos. Keep the Apps folder so it shows in Folder. */
+/** One-time: lift leftover Apps children to root. Never wipe Photos/Documents. */
 export async function flattenStockFolders() {
+  const db = await open();
+  const done = await tx(db, ["meta"], "readonly", (t) => req(t.objectStore("meta").get("flat-v14")));
+  db.close();
+  if (done) return;
+
   const root = await listChildren(null);
-  for (const n of root) {
-    if (n.kind === "folder" && DROP_ROOT.has(n.name)) await purge(n.id);
-  }
-  const stock = await listChildren(null);
-  for (const n of stock) {
-    if (n.kind === "folder" && n.name === APPS_FOLDER_NAME) continue;
-    if (n.kind === "folder" && EMPTY_STOCK.has(n.name) && !(await folderHasFiles(n.id))) {
-      await purge(n.id);
+  const apps = root.find((n) => n.kind === "folder" && n.name === "Apps");
+  if (apps) {
+    const kids = await listChildren(apps.id);
+    const leftover = kids.length === 0 || kids.some((k) => OLD_APP_MODULES.has(k.name));
+    if (leftover) {
+      for (const k of kids) await moveNode(k.id, null);
+      await purge(apps.id);
     }
   }
+  const after = await listChildren(null);
+  for (const n of after) {
+    if (n.kind === "folder" && OLD_APP_MODULES.has(n.name)) {
+      const kids = await listChildren(n.id);
+      if (kids.length === 0) await purge(n.id);
+    }
+  }
+  const db2 = await open();
+  await tx(db2, ["meta"], "readwrite", (t) => req(t.objectStore("meta").put({ key: "flat-v14", at: Date.now() })));
+  db2.close();
 }
 
 export { guessMime };
