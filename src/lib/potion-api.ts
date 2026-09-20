@@ -11,6 +11,20 @@ export type TreeEntry = {
   parentPath: string;
 };
 
+export type RestoreRecord = {
+  id: string;
+  fileName: string;
+  deviceKind: string;
+  restoredAt: string;
+};
+
+export type ConnectedApp = {
+  id: string;
+  name: string;
+  folderId: string;
+  files: number;
+};
+
 async function fileToB64(file: Blob) {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -187,4 +201,38 @@ export async function putCloudFile(parentPath: string, name: string, mime: strin
     parentPath.split("/").filter(Boolean),
   );
   await putFiles("cloud", parentId, [asFile(name, mime, bytes)]);
+}
+
+export function spaceKey() {
+  return "";
+}
+
+export function lastRestore(): RestoreRecord | null {
+  return null;
+}
+
+export async function connectedApps(_mode: StoreMode): Promise<ConnectedApp[]> {
+  return [];
+}
+
+export async function addConnectedApp(_mode: StoreMode, _name: string) {
+  throw new Error("Apps was removed. Use Folder.");
+}
+
+export async function removeConnectedApp(_name: string) {}
+
+export async function ensureAppFolder(_mode: StoreMode, _name: string) {
+  return "";
+}
+
+export async function listAppBackups(_mode: StoreMode, _app: string) {
+  return { folderId: "", files: [] as PotionNode[] };
+}
+
+export async function saveAppBackup(_mode: StoreMode, _app: string, _payload: string) {
+  throw new Error("Apps was removed. Use Folder.");
+}
+
+export async function restoreBackup(_mode: StoreMode, _id: string, _device: string) {
+  throw new Error("Apps was removed. Use Folder.");
 }
