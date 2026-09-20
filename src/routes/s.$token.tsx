@@ -3,9 +3,26 @@ import { useEffect, useState } from "react";
 import { PotionMark } from "@/components/potion-mark";
 import { APP_VERSION_LABEL } from "@/lib/version";
 import * as db from "@/lib/potion-db";
+import * as cloud from "@/lib/potion-cloud";
 import { formatBytes } from "@/lib/utils";
 
 export const Route = createFileRoute("/s/$token")({ component: SharePage });
+
+function bytesFromB64(b64: string) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function saveBlob(bytes: BlobPart, name: string, mime: string | null) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime || "application/octet-stream" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
 
 function SharePage() {
   const { token } = Route.useParams();
@@ -18,40 +35,58 @@ function SharePage() {
   const [need, setNeed] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [kids, setKids] = useState<{ id: string; name: string; kind: string; size: number }[]>([]);
+  const [remote, setRemote] = useState(false);
 
   useEffect(() => {
     void (async () => {
       await db.ensureSeeded();
       const hit = await db.getShare(token);
-      if (!hit) {
-        setState("gone");
+      if (hit) {
+        setName(hit.node.name);
+        setSize(hit.node.size);
+        setKind(hit.node.kind);
+        setNodeId(hit.node.id);
+        setRemote(false);
+        if (hit.node.kind === "folder") {
+          const list = await db.listChildren(hit.node.id);
+          setKids(list.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
+        }
+        if (hit.share.password) {
+          setNeed(hit.share.password);
+          setState("gate");
+        } else setState("ready");
         return;
       }
-      setName(hit.node.name);
-      setSize(hit.node.size);
-      setKind(hit.node.kind);
-      setNodeId(hit.node.id);
-      if (hit.node.kind === "folder") {
-        const list = await db.listChildren(hit.node.id);
-        setKids(list.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
+      try {
+        const shared = await cloud.getSharedCloud({ data: token });
+        if (!shared) {
+          setState("gone");
+          return;
+        }
+        setName(shared.node.name);
+        setSize(shared.node.size);
+        setKind(shared.node.kind);
+        setNodeId(shared.node.id);
+        setKids(shared.kids.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
+        setRemote(true);
+        setState("ready");
+      } catch {
+        setState("gone");
       }
-      if (hit.share.password) {
-        setNeed(hit.share.password);
-        setState("gate");
-      } else setState("ready");
     })();
   }, [token]);
 
   async function download(id = nodeId, fileName = name) {
     if (!id) return;
-    const blob = await db.currentBlob(id);
-    if (!blob) return;
-    const url = URL.createObjectURL(new Blob([blob.bytes], { type: blob.mime || "application/octet-stream" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!remote) {
+      const blob = await db.currentBlob(id);
+      if (!blob) return;
+      saveBlob(blob.bytes, fileName, blob.mime);
+      return;
+    }
+    const file = await cloud.getSharedFileCloud({ data: { token, id } });
+    if (!file) return;
+    saveBlob(bytesFromB64(file.content), file.name, file.mime);
   }
 
   return (

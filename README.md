@@ -33,7 +33,9 @@ Open Potion. You do not need an account. Files live on this computer until you s
 - **Trash** — restore or delete forever.
 - **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to your account when you are signed in. The phone app is another window on Potion, not a second Sync.
 
-Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder set to Don’t sync stays on that device only. Potion skips anything over 8 MB.
+Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder marked Don’t sync is skipped when Start runs. Potion skips anything over 3 MB.
+
+The public site is [potion-eect13.vercel.app](https://potion-eect13.vercel.app). If that page asks you to log in to Vercel, turn **Deployment Protection** off on the project so Potion is actually public.
 
 ## Self-host (web)
 

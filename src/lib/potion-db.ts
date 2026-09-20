@@ -286,6 +286,13 @@ async function allNodes(): Promise<PotionNode[]> {
   return all;
 }
 
+export async function listAlive(): Promise<PotionNode[]> {
+  const all = await allNodes();
+  return all
+    .filter((n) => !n.deletedAt)
+    .map((n) => ({ ...n, synced: n.synced !== false }));
+}
+
 export async function uniqueName(parentId: string | null, name: string, skipId?: string) {
   const kids = await listChildren(parentId);
   const taken = new Set(kids.filter((k) => k.id !== skipId).map((k) => k.name));
@@ -471,16 +478,6 @@ export async function emptyTrash() {
   for (const r of rows) await purge(r.id);
 }
 
-export async function recents(): Promise<PotionNode[]> {
-  const db = await open();
-  const all = await tx(db, ["nodes"], "readonly", (t) => req(t.objectStore("nodes").getAll()));
-  db.close();
-  return all
-    .filter((n) => !n.deletedAt && n.kind === "file")
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 40);
-}
-
 export async function search(q: string): Promise<PotionNode[]> {
   const needle = q.trim().toLowerCase();
   if (!needle) return listChildren(null);
@@ -506,41 +503,6 @@ export async function currentBlob(nodeId: string): Promise<PotionBlob | undefine
   return blobs.sort((a, b) => b.version - a.version)[0];
 }
 
-export async function versionsOf(nodeId: string) {
-  const node = await getNode(nodeId);
-  const db = await open();
-  const blobs = await tx(db, ["blobs"], "readonly", (t) => req(t.objectStore("blobs").index("node").getAll(nodeId)));
-  db.close();
-  return { node, history: blobs.sort((a, b) => b.version - a.version) };
-}
-
-export async function revert(nodeId: string, version: number) {
-  const { node, history } = await versionsOf(nodeId);
-  if (!node) return;
-  const v = history.find((h) => h.version === version);
-  if (!v) return;
-  const next = node.version + 1;
-  node.size = v.bytes.byteLength;
-  node.mime = v.mime;
-  node.hash = await sha256(v.bytes);
-  node.version = next;
-  node.updatedAt = Date.now();
-  const db = await open();
-  await tx(db, ["nodes", "blobs"], "readwrite", async (t) => {
-    await req(t.objectStore("nodes").put(node));
-    await req(
-      t.objectStore("blobs").put({
-        id: nid(),
-        nodeId,
-        version: next,
-        mime: v.mime,
-        bytes: v.bytes,
-      }),
-    );
-  });
-  db.close();
-}
-
 export async function createShare(nodeId: string, opts: { password?: string; hours?: number }) {
   const share: PotionShare = {
     token: nid().replace(/-/g, "").slice(0, 22),
@@ -553,23 +515,6 @@ export async function createShare(nodeId: string, opts: { password?: string; hou
   await tx(db, ["shares"], "readwrite", (t) => req(t.objectStore("shares").put(share)));
   db.close();
   return share;
-}
-
-export async function listShares(): Promise<(PotionShare & { name: string })[]> {
-  const db = await open();
-  const shares = await tx(db, ["shares"], "readonly", (t) => req(t.objectStore("shares").getAll()));
-  const nodes = await tx(db, ["nodes"], "readonly", (t) => req(t.objectStore("nodes").getAll()));
-  db.close();
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  return shares
-    .map((s) => ({ ...s, name: byId.get(s.nodeId)?.name || "Missing" }))
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-export async function revokeShare(token: string) {
-  const db = await open();
-  await tx(db, ["shares"], "readwrite", (t) => req(t.objectStore("shares").delete(token)));
-  db.close();
 }
 
 export async function getShare(token: string) {

@@ -99,18 +99,27 @@ export async function collectTree(
   parentId: string | null = null,
   prefix = "",
 ): Promise<TreeEntry[]> {
-  const kids = await listNodes(mode, parentId);
-  const out: TreeEntry[] = [];
-  for (const k of kids) {
-    const path = prefix ? `${prefix}/${k.name}` : k.name;
-    if (k.kind === "folder") {
-      if (k.synced === false) continue;
-      out.push({ node: k, path, parentPath: prefix });
-      out.push(...(await collectTree(mode, k.id, path)));
-    } else {
-      out.push({ node: k, path, parentPath: prefix });
-    }
+  const all = mode === "cloud" ? await cloud.listAllCloud() : await db.listAlive();
+  const byParent = new Map<string | null, PotionNode[]>();
+  for (const n of all) {
+    const list = byParent.get(n.parentId) ?? [];
+    list.push(n);
+    byParent.set(n.parentId, list);
   }
+  const out: TreeEntry[] = [];
+  const walk = (pid: string | null, pre: string) => {
+    for (const k of byParent.get(pid) ?? []) {
+      const path = pre ? `${pre}/${k.name}` : k.name;
+      if (k.kind === "folder") {
+        if (k.synced === false) continue;
+        out.push({ node: k, path, parentPath: pre });
+        walk(k.id, path);
+      } else {
+        out.push({ node: k, path, parentPath: pre });
+      }
+    }
+  };
+  walk(parentId, prefix);
   return out;
 }
 
@@ -227,5 +236,12 @@ export async function putCloudFile(parentPath: string, name: string, mime: strin
     "cloud",
     parentPath.split("/").filter(Boolean),
   );
-  await putFiles("cloud", parentId, [asFile(name, mime, bytes)]);
+  await cloud.putCloud({
+    data: {
+      parentId,
+      name,
+      mime: mime || db.guessMime(name),
+      content: await fileToB64(new Blob([bytes])),
+    },
+  });
 }

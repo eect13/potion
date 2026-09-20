@@ -6,7 +6,6 @@ import {
   FileText,
   Upload,
   Trash2,
-  Copy,
   RotateCcw,
   Cloud,
   Sun,
@@ -14,7 +13,6 @@ import {
   PanelLeftClose,
   PanelLeft,
   LogIn,
-  Share2,
   MoreHorizontal,
   Link2,
   Play,
@@ -70,6 +68,9 @@ const SORT_LABEL: Record<SortKey, string> = {
   size: "Size",
 };
 
+const THUMB_MAX = 1_500_000;
+const thumbs = new Map<string, string>();
+
 export function PotionApp() {
   const { user, isPending } = useCurrentUserState();
   const mode: StoreMode = user ? "cloud" : "local";
@@ -92,6 +93,7 @@ export function PotionApp() {
   const [layout, setLayout] = useState<Layout>("list");
   const [preview, setPreview] = useState<PotionNode | null>(null);
   const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [used, setUsed] = useState(0);
@@ -148,8 +150,8 @@ export function PotionApp() {
     await api.ensurePotion(mode);
     if (view === "trash") {
       setTrashItems(await api.listTrash(mode));
-    } else if (query.trim()) {
-      setItems(await api.searchNodes(mode, query.trim()));
+    } else if (search) {
+      setItems(await api.searchNodes(mode, search));
     } else {
       setItems(await api.listNodes(mode, parentId));
     }
@@ -163,11 +165,17 @@ export function PotionApp() {
       /* ignore */
     }
     setReady(true);
-  }, [mode, parentId, isPending, query, view]);
+  }, [mode, parentId, isPending, search, view]);
 
   useEffect(() => {
     void refresh().catch(() => setReady(true));
   }, [refresh]);
+
+  useEffect(() => {
+    const wait = query.trim() ? 200 : 0;
+    const t = window.setTimeout(() => setSearch(query.trim()), wait);
+    return () => window.clearTimeout(t);
+  }, [query]);
 
   useEffect(() => {
     const t = readTheme();
@@ -197,7 +205,7 @@ export function PotionApp() {
       maybeAutoSync(mode);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not add files";
-      ping(/too large/i.test(msg) ? "One file is over 8 MB for your account" : msg);
+      ping(/too large/i.test(msg) ? "One file is over 3 MB for your account" : msg);
     } finally {
       setBusy(false);
     }
@@ -211,64 +219,96 @@ export function PotionApp() {
     a.href = url;
     a.download = file.name;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
 
   async function copyItem(node: PotionNode) {
-    await api.copyNode(mode, node.id, node.parentId);
-    ping(`Copied ${node.name}`);
-    setMenuFor(null);
-    await refresh();
+    try {
+      await api.copyNode(mode, node.id, node.parentId);
+      ping(`Copied ${node.name}`);
+      setMenuFor(null);
+      await refresh();
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not copy");
+    }
   }
 
   async function deleteItem(node: PotionNode) {
-    await api.trashNode(mode, node.id);
-    ping(`Moved ${node.name} to trash`);
-    setMenuFor(null);
-    await refresh();
+    await trashMany([node]);
+  }
+
+  async function trashMany(nodes: PotionNode[]) {
+    if (!nodes.length) return;
+    setBusy(true);
+    try {
+      for (const n of nodes) await api.trashNode(mode, n.id);
+      ping(nodes.length === 1 ? `Moved ${nodes[0].name} to trash` : `Moved ${nodes.length} items to trash`);
+      setMenuFor(null);
+      await refresh();
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not move to trash");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function toggleSync(node: PotionNode) {
-    const next = node.synced === false;
-    await api.setSynced(mode, node.id, next);
-    ping(next ? `Syncing ${node.name}` : `${node.name} stays on this device`);
-    setMenuFor(null);
-    await refresh();
+    try {
+      const next = node.synced === false;
+      await api.setSynced(mode, node.id, next);
+      ping(next ? `Syncing ${node.name}` : `${node.name} is skipped on Start`);
+      setMenuFor(null);
+      await refresh();
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not update sync");
+    }
   }
 
   async function shareItem(node: PotionNode) {
-    const share = await api.shareNode(mode, node.id);
-    const url = `${window.location.origin}/s/${share.token}`;
-    setMenuFor(null);
-    setSheet(
-      <ShareSheet
-        name={node.name}
-        url={url}
-        onCopy={() => {
-          void navigator.clipboard.writeText(url);
-          ping("Link copied");
-        }}
-        onClose={() => setSheet(null)}
-      />,
-    );
+    try {
+      const share = await api.shareNode(mode, node.id);
+      const url = `${window.location.origin}/s/${share.token}`;
+      setMenuFor(null);
+      setSheet(
+        <ShareSheet
+          name={node.name}
+          url={url}
+          onCopy={() => {
+            void navigator.clipboard.writeText(url);
+            ping("Link copied");
+          }}
+          onClose={() => setSheet(null)}
+        />,
+      );
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not share");
+    }
   }
 
   async function moveItem(node: PotionNode) {
-    const targets = await api.listFolderTargets(mode, node.kind === "folder" ? node.id : undefined);
-    setMenuFor(null);
-    setSheet(
-      <MoveSheet
-        name={node.name}
-        targets={targets}
-        onPick={async (dest) => {
-          await api.moveNode(mode, node.id, dest);
-          ping(`Moved ${node.name}`);
-          setSheet(null);
-          await refresh();
-        }}
-        onClose={() => setSheet(null)}
-      />,
-    );
+    try {
+      const targets = await api.listFolderTargets(mode, node.kind === "folder" ? node.id : undefined);
+      setMenuFor(null);
+      setSheet(
+        <MoveSheet
+          name={node.name}
+          targets={targets}
+          onPick={async (dest) => {
+            try {
+              await api.moveNode(mode, node.id, dest);
+              ping(`Moved ${node.name}`);
+              setSheet(null);
+              await refresh();
+            } catch (err) {
+              ping(err instanceof Error ? err.message : "Could not move");
+            }
+          }}
+          onClose={() => setSheet(null)}
+        />,
+      );
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not move");
+    }
   }
 
   function openRename(node: PotionNode) {
@@ -284,10 +324,14 @@ export function PotionApp() {
       setRenameFor(null);
       return;
     }
-    await api.renameNode(mode, renameFor.id, next);
-    ping(`Renamed to ${next}`);
-    setRenameFor(null);
-    await refresh();
+    try {
+      await api.renameNode(mode, renameFor.id, next);
+      ping(`Renamed to ${next}`);
+      setRenameFor(null);
+      await refresh();
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not rename");
+    }
   }
 
   function pick(node: PotionNode, e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
@@ -311,27 +355,42 @@ export function PotionApp() {
   }
 
   const selectedNodes = shown.filter((n) => selected.includes(n.id));
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && view === "folder") {
+      const viewNow = viewRef.current;
+      const shownNow = shownRef.current;
+      const selectedNow = shownNow.filter((n) => selectedRef.current.includes(n.id));
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && viewNow === "folder") {
         e.preventDefault();
-        setSelected(shown.map((n) => n.id));
+        setSelected(shownNow.map((n) => n.id));
       }
-      if (e.key === "Delete" || e.key === "Backspace") {
-        const n = selectedNodes[0];
-        if (n && view === "folder") void deleteItem(n);
+      if (e.key === "Delete" && viewNow === "folder" && selectedNow.length) {
+        e.preventDefault();
+        void (async () => {
+          for (const n of selectedNow) await api.trashNode(mode, n.id);
+          ping(selectedNow.length === 1 ? `Moved ${selectedNow[0].name} to trash` : `Moved ${selectedNow.length} items to trash`);
+          await refresh();
+        })();
       }
-      if (e.key === "F2") {
-        const n = selectedNodes[0];
-        if (n) openRename(n);
+      if (e.key === "F2" && selectedNow[0]) {
+        e.preventDefault();
+        setMenuFor(null);
+        setRenameFor(selectedNow[0]);
+        setRenameValue(selectedNow[0].name);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
+  }, [mode, refresh]);
 
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground md:flex-row">
@@ -392,9 +451,13 @@ export function PotionApp() {
               disabled={trashItems.length === 0}
               onClick={() => {
                 void (async () => {
-                  await api.emptyTrash(mode);
-                  ping("Trash emptied");
-                  await refresh();
+                  try {
+                    await api.emptyTrash(mode);
+                    ping("Trash emptied");
+                    await refresh();
+                  } catch (err) {
+                    ping(err instanceof Error ? err.message : "Could not empty trash");
+                  }
                 })();
               }}
             >
@@ -464,6 +527,30 @@ export function PotionApp() {
               </label>
               {layout === "grid" ? <SortMenu sortKey={sortKey} sortDir={sortDir} onSort={setSort} /> : null}
             </div>
+            {selected.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm text-foreground">{selected.length} selected</p>
+                <button
+                  type="button"
+                  className="h-11 rounded-full border border-border px-4 text-sm"
+                  onClick={() => {
+                    for (const n of selectedNodes) if (n.kind === "file") void download(n);
+                  }}
+                >
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="h-11 rounded-full border border-destructive/40 px-4 text-sm text-destructive"
+                  onClick={() => void trashMany(selectedNodes)}
+                >
+                  Move to trash
+                </button>
+                <button type="button" className="h-11 rounded-full px-3 text-sm text-muted" onClick={() => setSelected([])}>
+                  Clear
+                </button>
+              </div>
+            ) : null}
           </header>
         )}
 
@@ -519,14 +606,22 @@ export function PotionApp() {
               onTrash={(n) => void deleteItem(n)}
               onRename={openRename}
               onRestore={async (n) => {
-                await api.restoreNode(mode, n.id);
-                ping(`Restored ${n.name}`);
-                await refresh();
+                try {
+                  await api.restoreNode(mode, n.id);
+                  ping(`Restored ${n.name}`);
+                  await refresh();
+                } catch (err) {
+                  ping(err instanceof Error ? err.message : "Could not restore");
+                }
               }}
               onPurge={async (n) => {
-                await api.purgeNode(mode, n.id);
-                ping(`Deleted ${n.name} forever`);
-                await refresh();
+                try {
+                  await api.purgeNode(mode, n.id);
+                  ping(`Deleted ${n.name} forever`);
+                  await refresh();
+                } catch (err) {
+                  ping(err instanceof Error ? err.message : "Could not delete");
+                }
               }}
             />
           )}
@@ -565,10 +660,14 @@ export function PotionApp() {
               const next = folderName.trim();
               if (!next) return;
               void (async () => {
-                await api.mkdir(mode, parentId, next);
-                setFolderName("");
-                setMkdirOpen(false);
-                await refresh();
+                try {
+                  await api.mkdir(mode, parentId, next);
+                  setFolderName("");
+                  setMkdirOpen(false);
+                  await refresh();
+                } catch (err) {
+                  ping(err instanceof Error ? err.message : "Could not create folder");
+                }
               })();
             }}
           >
@@ -769,11 +868,16 @@ function kindIcon(kind: ReturnType<typeof fileKind>, className: string) {
 }
 
 function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; layout: Layout }) {
-  const [url, setUrl] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(() => thumbs.get(node.id) ?? null);
   const kind = node.kind === "file" ? fileKind(node.mime, node.name) : null;
   const size = layout === "grid" ? "size-7" : "size-5";
   useEffect(() => {
-    if (kind !== "image" || layout !== "grid") return;
+    if (kind !== "image" || layout !== "grid" || node.size > THUMB_MAX) return;
+    const cached = thumbs.get(node.id);
+    if (cached) {
+      setUrl(cached);
+      return;
+    }
     let gone = false;
     let objectUrl: string | null = null;
     void (async () => {
@@ -781,6 +885,11 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
         const file = await api.getFile(mode, node.id);
         if (!file || gone) return;
         objectUrl = URL.createObjectURL(new Blob([file.bytes], { type: file.mime || "image/*" }));
+        if (gone) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        thumbs.set(node.id, objectUrl);
         setUrl(objectUrl);
       } catch {
         /* keep icon */
@@ -788,9 +897,8 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
     })();
     return () => {
       gone = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [kind, mode, node.id, layout]);
+  }, [kind, mode, node.id, node.size, layout]);
   if (node.kind === "folder") {
     return <Folder className={cn("shrink-0 text-muted", size)} strokeWidth={1.6} />;
   }
@@ -1150,7 +1258,7 @@ function MoveSheet({
   return (
     <div className="space-y-4">
       <h3 className="font-serif text-2xl italic">Move {name}</h3>
-      <p className="text-sm text-muted">Pick a folder. The file changes house, it is not copied.</p>
+      <p className="text-sm text-muted">Pick a folder. The file is moved, not copied.</p>
       <ul className="max-h-64 space-y-1 overflow-auto">
         {targets.map((t) => (
           <li key={t.id ?? "root"}>
@@ -1256,10 +1364,10 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
             Search from the bar. Rename from the menu or F2. Trash is a real bin — restore or empty it.
           </li>
           <li>
-            A folder marked <span className="text-foreground">Syncing</span> copies to your account. Don’t sync keeps it on this device.
+            A folder marked <span className="text-foreground">Syncing</span> is included when you tap Start. Don’t sync skips it.
           </li>
           <li>
-            Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Files over 8 MB stay here.
+            Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Files over 3 MB stay here.
           </li>
         </ol>
         <p className="flex items-start gap-2 pt-1">

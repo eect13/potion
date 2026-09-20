@@ -14,7 +14,7 @@ export type SyncState = {
   skipped: number;
 };
 
-const LOCKER_MAX = 8 * 1024 * 1024;
+const ACCOUNT_MAX = 3 * 1024 * 1024;
 
 type Job = {
   action: "index" | "upload" | "download";
@@ -123,8 +123,8 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
 
 async function runJob(job: Job) {
   if (job.action === "index") return;
-  if (job.action === "upload" && job.size > LOCKER_MAX) {
-    throw new Error("File too large (8 MB).");
+  if (job.action === "upload" && job.size > ACCOUNT_MAX) {
+    throw new Error("File too large (3 MB).");
   }
   const file = await api.getFile(job.source, job.nodeId);
   if (!file) throw new Error(`Missing ${job.name}`);
@@ -207,7 +207,7 @@ export async function startSync(nextMode: StoreMode) {
         ...state,
         status: "idle",
         progress: 100,
-        current: mode === "cloud" ? "Locker and this device match" : "Nothing to sync on this device",
+        current: mode === "cloud" ? "Your account and this device match" : "Nothing to sync on this device",
       };
       emit();
       return;

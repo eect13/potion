@@ -4,6 +4,7 @@ const unavailable = (..._args: unknown[]) =>
 
 export const ensureCloud = unavailable;
 export const listCloud = unavailable;
+export const listAllCloud = unavailable;
 export const pathCloud = unavailable;
 export const mkdirCloud = unavailable;
 export const putCloud = unavailable;
@@ -13,6 +14,8 @@ export const copyCloud = unavailable;
 export const moveCloud = unavailable;
 export const syncCloud = unavailable;
 export const shareCloud = unavailable;
+export const getSharedCloud = unavailable;
+export const getSharedFileCloud = unavailable;
 export const listTargetsCloud = unavailable;
 export const renameCloud = unavailable;
 export const searchCloud = unavailable;
@@ -21,11 +24,3 @@ export const listTrashCloud = unavailable;
 export const restoreCloud = unavailable;
 export const purgeCloud = unavailable;
 export const emptyTrashCloud = unavailable;
-
-export function toB64(s: string) {
-  return btoa(unescape(encodeURIComponent(s)));
-}
-
-export function fromB64(s: string) {
-  return decodeURIComponent(escape(atob(s)));
-}
