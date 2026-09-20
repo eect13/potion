@@ -94,7 +94,7 @@ function Login() {
                 disabled={busy}
                 className="h-11 w-full rounded-full bg-accent text-sm font-medium text-accent-foreground disabled:opacity-60"
               >
-                {busy ? "Working" : mode === "up" ? "Make a Potion key" : "Open my locker"}
+                {busy ? "Working" : mode === "up" ? "Create account" : "Sign in"}
               </button>
               {err ? <p className="text-sm text-destructive">{err}</p> : null}
             </form>
@@ -103,7 +103,7 @@ function Login() {
               className="w-full text-sm text-muted"
               onClick={() => setMode(mode === "up" ? "in" : "up")}
             >
-              {mode === "up" ? "I already have a key" : "I need a new email key"}
+              {mode === "up" ? "I already have an account" : "Create an account with email"}
             </button>
           </>
         ) : (

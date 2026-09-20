@@ -197,7 +197,7 @@ export function PotionApp() {
       maybeAutoSync(mode);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not add files";
-      ping(/too large/i.test(msg) ? "One file is over 8 MB for the locker" : msg);
+      ping(/too large/i.test(msg) ? "One file is over 8 MB for your account" : msg);
     } finally {
       setBusy(false);
     }
@@ -348,7 +348,7 @@ export function PotionApp() {
         <div className={cn("flex flex-col gap-1 border-t border-border pt-3", collapsed && "items-center")}>
           {collapsed ? null : (
             <p className="px-3 pb-2 font-mono text-xs text-faint tabular-nums">
-              {formatBytes(used)} {mode === "cloud" ? "in locker" : "on this device"}
+              {formatBytes(used)} {mode === "cloud" ? "in your account" : "on this device"}
             </p>
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} collapsed={collapsed} />
@@ -1210,7 +1210,7 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
       <section className="space-y-4 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">Sync</h2>
         <p>Start walks folders marked Syncing. Pause holds the line. Stop clears it. Retry starts over.</p>
-        <p className="font-mono text-xs text-faint tabular-nums">{formatBytes(used)} {signedIn ? "in the locker" : "on this device"}</p>
+        <p className="font-mono text-xs text-faint tabular-nums">{formatBytes(used)} {signedIn ? "in your account" : "on this device"}</p>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -1246,7 +1246,7 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
         <h2 className="text-foreground">How to use it</h2>
         <ol className="list-decimal space-y-2 pl-4">
           <li>
-            <span className="text-foreground">Folder</span> is the box. Drop photos, videos, music, PDFs, zips, docs — any file.
+            <span className="text-foreground">Folder</span> is Potion. Drop photos, videos, music, PDFs, zips, docs — any file.
           </li>
           <li>
             Sort like a file explorer: click <span className="text-foreground">Name</span>, <span className="text-foreground">Date modified</span>,{" "}
@@ -1256,7 +1256,7 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
             Search from the bar. Rename from the menu or F2. Trash is a real bin — restore or empty it.
           </li>
           <li>
-            A folder marked <span className="text-foreground">Syncing</span> goes to the locker. Don’t sync keeps it on this device.
+            A folder marked <span className="text-foreground">Syncing</span> copies to your account. Don’t sync keeps it on this device.
           </li>
           <li>
             Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Files over 8 MB stay here.
@@ -1264,24 +1264,22 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
         </ol>
         <p className="flex items-start gap-2 pt-1">
           <Smartphone className="mt-0.5 size-4 shrink-0 text-faint" strokeWidth={1.75} />
-          <span>The phone app is another window on the same box, not a second Sync.</span>
+          <span>The phone app is another window on Potion, not a second Sync.</span>
         </p>
       </section>
-      <p className="font-serif text-3xl italic text-foreground">Like a lunchbox.</p>
-      <p>Potion is a box for files. Web, phone, or computer. Same box.</p>
       <section className="space-y-2 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">You do not need an account</h2>
         <p>
-          Skip sign-in and the box stays glued to <span className="text-foreground">this</span> browser.
+          Skip sign-in and your files stay on <span className="text-foreground">this</span> browser.
         </p>
       </section>
       <section className="space-y-2 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="text-foreground">Sign-in is a locker key</h2>
-        <p>Same key on two devices = same locker. Nothing copies until you sign in on the other device too.</p>
-        <p className="text-foreground">{signedIn ? "You have a key. This is the account folder." : "You have no key yet. This is this-device only."}</p>
+        <h2 className="text-foreground">Sign in when you want</h2>
+        <p>The same account on two devices shares the same files. Nothing copies until you sign in on the other device too.</p>
+        <p className="text-foreground">{signedIn ? "You are signed in. These are your files." : "You are not signed in. Files stay on this device."}</p>
         {!signedIn ? (
           <Link to="/login" className="mt-2 inline-flex h-11 items-center rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">
-            Get a key (optional)
+            Sign in (optional)
           </Link>
         ) : null}
       </section>

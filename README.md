@@ -31,9 +31,9 @@ Open Potion. You do not need an account. Files live on this computer until you s
 
 - **Folder** — list or grid, like a file explorer. Sort by name, date modified, type, or size. Search. Rename (F2). Copy, move, share, trash. Photos, videos, PDFs, zips, docs — any file.
 - **Trash** — restore or delete forever.
-- **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to the locker when you are signed in. The phone app is another window on the same box, not a second Sync.
+- **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to your account when you are signed in. The phone app is another window on Potion, not a second Sync.
 
-Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder set to Don’t sync stays on that device only. The locker skips anything over 8 MB.
+Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder set to Don’t sync stays on that device only. Potion skips anything over 8 MB.
 
 ## Self-host (web)
 
@@ -48,7 +48,7 @@ Production:
 npm run build
 ```
 
-Needs Node 22. Optional `DATABASE_URL` for the signed-in locker. Without it, files stay on the device.
+Needs Node 22. Optional `DATABASE_URL` for signed-in accounts. Without it, files stay on the device.
 
 ## GitHub
 

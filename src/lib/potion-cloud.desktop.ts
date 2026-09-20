@@ -1,6 +1,6 @@
-/** Desktop / APK stub — cloud locker is the website. Guest files stay local. */
+/** Desktop / APK stub — signed-in files live on the website. Guest files stay local. */
 const unavailable = (..._args: unknown[]) =>
-  Promise.reject(new Error("Cloud locker lives on the website. Files on this computer stay local."));
+  Promise.reject(new Error("Signed-in files live on the website. Files on this computer stay local."));
 
 export const ensureCloud = unavailable;
 export const listCloud = unavailable;

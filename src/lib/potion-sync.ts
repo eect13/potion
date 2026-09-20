@@ -96,7 +96,7 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
   try {
     cloudTree = await api.collectTree("cloud");
   } catch (err) {
-    throw new Error(err instanceof Error ? err.message : "Could not reach the locker");
+    throw new Error(err instanceof Error ? err.message : "Could not reach Potion");
   }
   const localFiles = new Map(localTree.filter((e) => e.node.kind === "file").map((e) => [e.path, e]));
   const cloudFiles = new Map(cloudTree.filter((e) => e.node.kind === "file").map((e) => [e.path, e]));
@@ -164,7 +164,7 @@ async function pump() {
             ...state,
             skipped: state.skipped + 1,
             error: large
-              ? `${job.name} is too large for the locker and stays on this device`
+              ? `${job.name} is too large for your account and stays on this device`
               : msg,
           };
           emit();

@@ -38,8 +38,8 @@
     "copyright": "Copyright © 2026 Eric Emerson Tan",
     "homepage": "https://github.com/eect13/potion",
     "licenseFile": "../LICENSE",
-    "shortDescription": "A folder for your apps",
-    "longDescription": "Potion is a desktop locker: folders, files, list and grid, optional cloud when you sign in. Guest files stay on this computer.",
+    "shortDescription": "A folder for your files",
+    "longDescription": "Potion is a desktop folder: files, list and grid, optional cloud when you sign in. Guest files stay on this computer.",
     "icon": [
       "icons/icon.ico",
       "icons/32x32.png",
