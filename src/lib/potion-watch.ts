@@ -40,3 +40,33 @@ export function subscribePotion(fn: () => void) {
     window.removeEventListener("storage", onStorage);
   };
 }
+
+/** Signed-in devices hold a live stream. A slow poll is only the fallback. */
+export function subscribeCloud(fn: () => void) {
+  let es: EventSource | null = null;
+  let poll = 0;
+  let stopped = false;
+  let bearer = "";
+  try {
+    bearer = sessionStorage.getItem("grok-auth.bearer-token") || "";
+  } catch {
+    bearer = "";
+  }
+  const q = bearer ? `?bearer=${encodeURIComponent(bearer)}` : "";
+  try {
+    es = new EventSource(`/api/potion-live${q}`);
+    es.onmessage = () => fn();
+    es.onerror = () => {
+      es?.close();
+      if (stopped || poll) return;
+      poll = window.setInterval(fn, 20000);
+    };
+  } catch {
+    poll = window.setInterval(fn, 20000);
+  }
+  return () => {
+    stopped = true;
+    es?.close();
+    if (poll) window.clearInterval(poll);
+  };
+}

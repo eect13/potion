@@ -1,6 +1,7 @@
 import * as api from "@/lib/potion-api";
 import type { StoreMode, TreeEntry } from "@/lib/potion-api";
 import { fileKind } from "@/lib/utils";
+import { pairOf, planFile } from "@/lib/potion-plan";
 
 export type SyncStatus = "idle" | "running" | "paused" | "stopped" | "error";
 
@@ -15,7 +16,7 @@ export type SyncState = {
 };
 
 type Job = {
-  action: "index" | "upload" | "download";
+  action: "index" | "upload" | "download" | "conflict";
   label: string;
   path: string;
   parentPath: string;
@@ -24,6 +25,10 @@ type Job = {
   size: number;
   nodeId: string;
   source: StoreMode;
+  localId?: string;
+  remoteId?: string;
+  hash?: string | null;
+  remoteHash?: string | null;
 };
 
 type Listener = (s: SyncState) => void;
@@ -80,11 +85,6 @@ function jobsFromTree(tree: TreeEntry[], action: Job["action"], source: StoreMod
     }));
 }
 
-function sameFile(a: TreeEntry, b: TreeEntry) {
-  if (!a.node.hash || !b.node.hash) return false;
-  return a.node.hash === b.node.hash;
-}
-
 async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
   const localTree = await api.collectTree("local");
   if (nextMode !== "cloud") {
@@ -96,24 +96,44 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
   } catch (err) {
     throw new Error(err instanceof Error ? err.message : "Could not reach Potion");
   }
+  const bases = await api.loadBases().catch(() => ({} as Record<string, { hash: string | null; conflict: string | null }>));
   const localFiles = new Map(localTree.filter((e) => e.node.kind === "file").map((e) => [e.path, e]));
   const cloudFiles = new Map(cloudTree.filter((e) => e.node.kind === "file").map((e) => [e.path, e]));
+  const paths = new Set([...localFiles.keys(), ...cloudFiles.keys()]);
   const out: Job[] = [];
-  const uploading = new Set<string>();
-  for (const [path, local] of localFiles) {
-    const remote = cloudFiles.get(path);
-    if (remote && sameFile(local, remote)) continue;
-    if (!remote || local.node.updatedAt >= remote.node.updatedAt) {
-      out.push(...jobsFromTree([local], "upload", "local"));
-      uploading.add(path);
-    }
-  }
-  for (const [path, remote] of cloudFiles) {
-    if (uploading.has(path)) continue;
+  for (const path of paths) {
     const local = localFiles.get(path);
-    if (local && sameFile(local, remote)) continue;
-    if (!local || local.node.hash !== remote.node.hash) {
-      out.push(...jobsFromTree([remote], "download", "cloud"));
+    const remote = cloudFiles.get(path);
+    const plan = planFile(local?.node, remote?.node, bases[path]);
+    if (plan === "skip") continue;
+    if (plan === "agree" && local?.node.hash) {
+      void api.rememberBase(path, local.node.hash, null).catch(() => undefined);
+      continue;
+    }
+    if (plan === "upload" && local) {
+      out.push({ ...jobsFromTree([local], "upload", "local")[0], hash: local.node.hash });
+      continue;
+    }
+    if (plan === "download" && remote) {
+      out.push({ ...jobsFromTree([remote], "download", "cloud")[0], hash: remote.node.hash });
+      continue;
+    }
+    if (plan === "conflict" && local && remote) {
+      out.push({
+        action: "conflict",
+        label: `Keep both versions · ${local.node.name}`,
+        path,
+        parentPath: local.parentPath,
+        name: local.node.name,
+        mime: local.node.mime,
+        size: local.node.size,
+        nodeId: local.node.id,
+        source: "local",
+        localId: local.node.id,
+        remoteId: remote.node.id,
+        hash: local.node.hash,
+        remoteHash: remote.node.hash,
+      });
     }
   }
   return out;
@@ -121,13 +141,20 @@ async function buildQueue(nextMode: StoreMode): Promise<Job[]> {
 
 async function runJob(job: Job) {
   if (job.action === "index") return;
+  if (job.action === "conflict" && job.localId && job.remoteId) {
+    await api.keepBoth(job.localId, job.remoteId);
+    await api.rememberBase(job.path, null, pairOf(job.hash ?? null, job.remoteHash ?? null));
+    return;
+  }
   const file = await api.getFile(job.source, job.nodeId);
   if (!file) throw new Error(`Missing ${job.name}`);
   if (job.action === "upload") {
     await api.putCloudFile(job.parentPath, file.name, file.mime, file.blob);
+    await api.rememberBase(job.path, job.hash || null, null);
     return;
   }
   await api.putLocalFile(job.parentPath, file.name, file.mime, file.blob);
+  await api.rememberBase(job.path, job.hash || null, null);
 }
 
 async function pump() {

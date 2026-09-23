@@ -1,4 +1,4 @@
-import { copyLocalBlob, deleteLocalBlobs, fingerprint, listLocalVersions, readLocalBlob, writeLocalBlob } from "@/lib/potion-blob";
+import { assertRoom, copyLocalBlob, deleteLocalBlobs, fingerprint, listLocalVersions, readLocalBlob, writeLocalBlob } from "@/lib/potion-blob";
 import { notifyPotion } from "@/lib/potion-watch";
 
 const DB_NAME = "potion-drive";
@@ -41,6 +41,7 @@ export type PotionComment = {
   id: string;
   nodeId: string;
   body: string;
+  author: string | null;
   createdAt: number;
 };
 
@@ -219,10 +220,29 @@ export async function putFiles(parentId: string | null, files: File[]) {
   const now = Date.now();
   const existing = await listChildren(parentId);
   const byName = new Map(existing.filter((n) => n.kind === "file").map((n) => [n.name, n]));
+  const written: PotionNode[] = [];
   for (const f of files) {
+    await assertRoom(f.size);
     const mime = f.type || guessMime(f.name);
     const hash = await fingerprint(f);
     const found = byName.get(f.name);
+    if (found && found.hash === hash) {
+      const have = await readLocalBlob(found.id, found.version);
+      if (have && have.size === f.size) {
+        written.push(found);
+        continue;
+      }
+      const start = have && have.size < f.size ? have.size : 0;
+      found.size = f.size;
+      found.mime = mime;
+      found.updatedAt = now;
+      const db = await open();
+      await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(found)));
+      db.close();
+      await writeLocalBlob(found.id, found.version, f, start);
+      written.push(found);
+      continue;
+    }
     if (found) {
       const nextVer = found.version + 1;
       found.size = f.size;
@@ -234,6 +254,7 @@ export async function putFiles(parentId: string | null, files: File[]) {
       await tx(db, ["nodes"], "readwrite", (t) => req(t.objectStore("nodes").put(found)));
       db.close();
       await writeLocalBlob(found.id, nextVer, f);
+      written.push(found);
     } else {
       const id = nid();
       const node: PotionNode = {
@@ -255,9 +276,11 @@ export async function putFiles(parentId: string | null, files: File[]) {
       db.close();
       await writeLocalBlob(id, 1, f);
       byName.set(f.name, node);
+      written.push(node);
     }
   }
   notifyPotion("add");
+  return written;
 }
 
 export async function rename(id: string, name: string) {
@@ -543,8 +566,24 @@ export async function listComments(nodeId: string): Promise<PotionComment[]> {
   return (rows as PotionComment[]).sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export async function addComment(nodeId: string, body: string): Promise<PotionComment> {
-  const row: PotionComment = { id: nid(), nodeId, body: body.trim().slice(0, 2000), createdAt: Date.now() };
+export async function stashVersion(nodeId: string, blob: Blob) {
+  const node = await getNode(nodeId);
+  if (!node) return null;
+  const vers = await listLocalVersions(nodeId);
+  const next = Math.max(node.version, ...vers, 0) + 1;
+  await writeLocalBlob(nodeId, next, blob);
+  notifyPotion("stash");
+  return next;
+}
+
+export async function addComment(nodeId: string, body: string, author?: string | null): Promise<PotionComment> {
+  const row: PotionComment = {
+    id: nid(),
+    nodeId,
+    body: body.trim().slice(0, 2000),
+    author: (author || "").trim().slice(0, 80) || null,
+    createdAt: Date.now(),
+  };
   if (!row.body) throw new Error("Empty comment");
   const db = await open();
   await tx(db, ["comments"], "readwrite", (t) => req(t.objectStore("comments").put(row)));

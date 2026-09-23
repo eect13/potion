@@ -59,14 +59,16 @@ export async function persistStorage() {
   }
 }
 
-export async function writeLocalBlob(nodeId: string, version: number, source: Blob): Promise<void> {
+export async function writeLocalBlob(nodeId: string, version: number, source: Blob, start = 0): Promise<void> {
   await persistStorage();
+  const from = Math.max(0, Math.min(start, source.size));
   const dir = await opfsDir();
   if (dir) {
     const handle = await dir.getFileHandle(blobName(nodeId, version), { create: true });
-    const writable = await handle.createWritable();
+    const writable = await handle.createWritable({ keepExistingData: from > 0 });
     try {
-      const reader = source.stream().getReader();
+      if (from > 0) await writable.seek(from);
+      const reader = source.slice(from).stream().getReader();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -78,7 +80,7 @@ export async function writeLocalBlob(nodeId: string, version: number, source: Bl
     await pruneOpfs(dir, nodeId, version);
     return;
   }
-  await writeIdbParts(nodeId, version, source);
+  await writeIdbParts(nodeId, version, source, from);
 }
 
 export async function readLocalBlob(nodeId: string, version: number): Promise<Blob | null> {
@@ -153,10 +155,10 @@ function openParts(): Promise<IDBDatabase> {
   });
 }
 
-async function writeIdbParts(nodeId: string, version: number, source: Blob) {
+async function writeIdbParts(nodeId: string, version: number, source: Blob, start = 0) {
   const db = await openParts();
-  let index = 0;
-  for (let offset = 0; offset < source.size; offset += SLICE) {
+  let index = Math.floor(Math.max(0, start) / SLICE);
+  for (let offset = index * SLICE; offset < source.size; offset += SLICE) {
     const slice = source.slice(offset, Math.min(offset + SLICE, source.size));
     const bytes = await slice.arrayBuffer();
     await new Promise<void>((resolve, reject) => {
@@ -243,4 +245,22 @@ async function deleteIdbParts(nodeId: string) {
     t.onerror = () => reject(t.error);
   });
   db.close();
+}
+
+export async function deviceRoom() {
+  try {
+    const estimate = await navigator.storage.estimate();
+    const quota = estimate.quota ?? 0;
+    const usage = estimate.usage ?? 0;
+    return { usage, quota, free: Math.max(0, quota - usage) };
+  } catch {
+    return { usage: 0, quota: 0, free: Number.POSITIVE_INFINITY };
+  }
+}
+
+/** Refuse only when the browser reports the write will not fit. No size cap. */
+export async function assertRoom(bytes: number) {
+  if (bytes <= 0) return;
+  const room = await deviceRoom();
+  if (room.quota > 0 && bytes > room.free) throw new Error("Not enough space on this device");
 }

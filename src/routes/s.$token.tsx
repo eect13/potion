@@ -4,8 +4,8 @@ import { PotionMark } from "@/components/potion-mark";
 import { APP_VERSION_LABEL } from "@/lib/version";
 import * as db from "@/lib/potion-db";
 import * as cloud from "@/lib/potion-cloud";
-import { pullSharedFile } from "@/lib/potion-api";
-import { formatBytes } from "@/lib/utils";
+import { pullSharedFile, addSharedComment, listSharedComments, mediaUrl } from "@/lib/potion-api";
+import { fileKind, formatBytes } from "@/lib/utils";
 
 export const Route = createFileRoute("/s/$token")({ component: SharePage });
 
@@ -30,6 +30,11 @@ function SharePage() {
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [kids, setKids] = useState<{ id: string; name: string; kind: string; size: number }[]>([]);
   const [remote, setRemote] = useState(false);
+  const [version, setVersion] = useState(1);
+  const [mime, setMime] = useState<string | null>(null);
+  const [comments, setComments] = useState<{ id: string; body: string; author: string | null; createdAt: number }[]>([]);
+  const [note, setNote] = useState("");
+  const [who, setWho] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -40,6 +45,8 @@ function SharePage() {
         setSize(hit.node.size);
         setKind(hit.node.kind);
         setNodeId(hit.node.id);
+        setVersion(hit.node.version);
+        setMime(hit.node.mime);
         setRemote(false);
         if (hit.node.kind === "folder") {
           const list = await db.listChildren(hit.node.id);
@@ -61,6 +68,8 @@ function SharePage() {
         setSize(shared.node.size);
         setKind(shared.node.kind);
         setNodeId(shared.node.id);
+        setVersion(shared.node.version);
+        setMime(shared.node.mime);
         setKids(shared.kids.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
         setRemote(true);
         setState("ready");
@@ -69,6 +78,30 @@ function SharePage() {
       }
     })();
   }, [token]);
+
+  useEffect(() => {
+    if (state !== "ready" || !nodeId) return;
+    void (async () => {
+      if (!remote) {
+        const rows = await db.listComments(nodeId);
+        setComments(rows);
+        return;
+      }
+      setComments(await listSharedComments(token));
+    })().catch(() => setComments([]));
+  }, [state, nodeId, remote, token]);
+
+  async function postNote() {
+    if (!nodeId || !note.trim()) return;
+    if (!remote) {
+      const row = await db.addComment(nodeId, note, who || "Guest");
+      setComments((cur) => [...cur, row]);
+    } else {
+      const row = await addSharedComment(token, note, who || "Guest");
+      setComments((cur) => [...cur, row]);
+    }
+    setNote("");
+  }
 
   async function download(id = nodeId, fileName = name) {
     if (!id) return;
@@ -144,6 +177,48 @@ function SharePage() {
               </li>
             ))}
           </ul>
+        ) : null}
+        {state === "ready" && remote && kind === "file" && (fileKind(mime, name) === "video" || fileKind(mime, name) === "audio" || fileKind(mime, name) === "pdf") ? (
+          <div className="mt-4">
+            {fileKind(mime, name) === "video" ? (
+              <video src={mediaUrl({ id: nodeId || "", version }, token)} controls className="max-h-64 w-full rounded-lg bg-elevated" />
+            ) : null}
+            {fileKind(mime, name) === "audio" ? (
+              <audio src={mediaUrl({ id: nodeId || "", version }, token)} controls className="w-full" />
+            ) : null}
+            {fileKind(mime, name) === "pdf" ? (
+              <iframe title={name} src={mediaUrl({ id: nodeId || "", version }, token)} className="h-64 w-full rounded-lg bg-elevated" />
+            ) : null}
+          </div>
+        ) : null}
+        {state === "ready" ? (
+          <div className="mt-6 space-y-3">
+            <p className="text-sm text-foreground">Comments</p>
+            <ul className="max-h-40 space-y-2 overflow-auto">
+              {comments.length === 0 ? <li className="text-sm text-muted">No comments yet.</li> : null}
+              {comments.map((c) => (
+                <li key={c.id} className="rounded-lg bg-elevated px-3 py-2">
+                  <p className="text-sm text-foreground">{c.body}</p>
+                  <p className="mt-1 text-xs text-faint">{c.author || "Guest"}</p>
+                </li>
+              ))}
+            </ul>
+            <input
+              value={who}
+              onChange={(e) => setWho(e.target.value)}
+              placeholder="Your name"
+              className="h-11 w-full rounded-lg border border-border bg-background px-3"
+            />
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Write a comment"
+              className="min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            />
+            <button type="button" onClick={() => void postNote()} className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">
+              Post
+            </button>
+          </div>
         ) : null}
       </div>
     </main>

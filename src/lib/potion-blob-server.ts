@@ -1,4 +1,4 @@
-import { copyFile, mkdir, open as fsOpen, readdir, stat, unlink } from "node:fs/promises";
+import { copyFile, mkdir, open as fsOpen, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 const ROOT = join(process.cwd(), ".data", "potion-blobs");
@@ -11,6 +11,19 @@ function safeId(id: string) {
 
 function filePath(userId: string, id: string, version: number) {
   return join(ROOT, safeId(userId), `${safeId(id)}.v${Number(version) || 0}`);
+}
+
+export function blobFilePath(userId: string, id: string, version: number) {
+  return filePath(userId, id, version);
+}
+
+/** Refuse only when the disk cannot hold the file. No size cap. */
+export async function assertDisk(bytes: number) {
+  if (bytes <= 0) return;
+  const dir = process.cwd();
+  const s = await statfs(dir);
+  const free = Number(s.bavail) * Number(s.bsize);
+  if (Number.isFinite(free) && bytes > free) throw new Error("Not enough space on the server");
 }
 
 export async function writeChunk(userId: string, id: string, version: number, offset: number, bytes: Uint8Array) {

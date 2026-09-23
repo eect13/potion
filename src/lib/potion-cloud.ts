@@ -195,6 +195,8 @@ export const putCloud = createServerFn({ method: "POST" })
   .validator((d: { parentId: string | null; name: string; mime: string; size: number; hash: string }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
+    const { assertDisk } = await import("@/lib/potion-blob-server");
+    await assertDisk(data.size);
     const sql = await getSql();
     const existing = data.parentId
       ? await sql<{ id: string; version: number }>`
@@ -241,6 +243,8 @@ export const commitCloud = createServerFn({ method: "POST" })
       insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
       values (${nid()}, ${context.userId}, ${data.id}, ${data.version}, ${data.size}, ${data.hash}, ${data.mime})`;
     await pruneBlobs(context.userId, data.id, data.version);
+    const { emitLive } = await import("@/lib/potion-live.server");
+    emitLive(context.userId);
     return { id: data.id, version: data.version };
   });
 
@@ -693,22 +697,129 @@ export const listCommentsCloud = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context, data: id }) => {
     const sql = await getSql();
-    const rows = await sql<{ id: string; body: string; created_at: string }>`
-      select id, body, created_at from potion_comments
+    const rows = await sql<{ id: string; body: string; created_at: string; author: string | null }>`
+      select id, body, created_at, author from potion_comments
       where user_id = ${context.userId} and node_id = ${id}
       order by created_at asc`;
-    return rows.map((r) => ({ id: r.id, nodeId: id, body: r.body, createdAt: Date.parse(r.created_at) || Date.now() }));
+    return rows.map((r) => ({
+      id: r.id,
+      nodeId: id,
+      body: r.body,
+      author: r.author,
+      createdAt: Date.parse(r.created_at) || Date.now(),
+    }));
   });
 
 export const addCommentCloud = createServerFn({ method: "POST" })
-  .validator((d: { id: string; body: string }) => ({ id: d.id, body: d.body.trim().slice(0, 2000) }))
+  .validator((d: { id: string; body: string; author?: string | null }) => ({
+    id: d.id,
+    body: d.body.trim().slice(0, 2000),
+    author: (d.author || "").trim().slice(0, 80) || null,
+  }))
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     if (!data.body) throw new Error("Empty comment");
     const sql = await getSql();
     const id = nid();
     await sql`
-      insert into potion_comments (id, user_id, node_id, body)
-      values (${id}, ${context.userId}, ${data.id}, ${data.body})`;
-    return { id, nodeId: data.id, body: data.body, createdAt: Date.now() };
+      insert into potion_comments (id, user_id, node_id, body, author)
+      values (${id}, ${context.userId}, ${data.id}, ${data.body}, ${data.author})`;
+    const { emitLive } = await import("@/lib/potion-live.server");
+    emitLive(context.userId);
+    return { id, nodeId: data.id, body: data.body, author: data.author, createdAt: Date.now() };
   });
+
+export const listSharedComments = createServerFn({ method: "GET" })
+  .validator((token: string) => token)
+  .handler(async ({ data: token }) => {
+    const sql = await getSql();
+    const shares = await sql<{ user_id: string; node_id: string }>`
+      select user_id, node_id from potion_shares where token = ${token} limit 1`;
+    const share = shares[0];
+    if (!share) return [];
+    const rows = await sql<{ id: string; body: string; created_at: string; author: string | null }>`
+      select id, body, created_at, author from potion_comments
+      where user_id = ${share.user_id} and node_id = ${share.node_id}
+      order by created_at asc`;
+    return rows.map((r) => ({
+      id: r.id,
+      nodeId: share.node_id,
+      body: r.body,
+      author: r.author,
+      createdAt: Date.parse(r.created_at) || Date.now(),
+    }));
+  });
+
+export const addSharedComment = createServerFn({ method: "POST" })
+  .validator((d: { token: string; body: string; author?: string }) => ({
+    token: d.token,
+    body: d.body.trim().slice(0, 2000),
+    author: (d.author || "Guest").trim().slice(0, 80) || "Guest",
+  }))
+  .handler(async ({ data }) => {
+    if (!data.body) throw new Error("Empty comment");
+    const sql = await getSql();
+    const shares = await sql<{ user_id: string; node_id: string }>`
+      select user_id, node_id from potion_shares where token = ${data.token} limit 1`;
+    const share = shares[0];
+    if (!share) throw new Error("Link gone");
+    const id = nid();
+    await sql`
+      insert into potion_comments (id, user_id, node_id, body, author)
+      values (${id}, ${share.user_id}, ${share.node_id}, ${data.body}, ${data.author})`;
+    const { emitLive } = await import("@/lib/potion-live.server");
+    emitLive(share.user_id);
+    return { id, nodeId: share.node_id, body: data.body, author: data.author, createdAt: Date.now() };
+  });
+
+export const listBasesCloud = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const rows = await sql<{ path: string; hash: string | null; conflict: string | null }>`
+      select path, hash, conflict from potion_sync_base where user_id = ${context.userId}`;
+    return rows;
+  });
+
+export const setBaseCloud = createServerFn({ method: "POST" })
+  .validator((d: { path: string; hash: string | null; conflict: string | null }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    await sql`
+      insert into potion_sync_base (user_id, path, hash, conflict)
+      values (${context.userId}, ${data.path}, ${data.hash}, ${data.conflict})
+      on conflict (user_id, path) do update set hash = ${data.hash}, conflict = ${data.conflict}`;
+    return { ok: true as const };
+  });
+
+export const beginStashCloud = createServerFn({ method: "POST" })
+  .validator((id: string) => id)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: id }) => {
+    const sql = await getSql();
+    const rows = await sql<{ version: number }>`
+      select version from potion_nodes where id = ${id} and user_id = ${context.userId} limit 1`;
+    if (!rows[0]) throw new Error("Missing");
+    const vers = await sql<{ version: number }>`
+      select version from potion_versions where user_id = ${context.userId} and node_id = ${id}`;
+    const max = Math.max(Number(rows[0].version) || 1, ...vers.map((v) => Number(v.version) || 0));
+    return { id, version: max + 1 };
+  });
+
+export const commitStashCloud = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; hash: string; size: number; mime: string }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const { blobSize } = await import("@/lib/potion-blob-server");
+    const onDisk = await blobSize(context.userId, data.id, data.version);
+    if (data.size > 0 && onDisk !== data.size) throw new Error("Upload incomplete");
+    await sql`
+      insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
+      values (${nid()}, ${context.userId}, ${data.id}, ${data.version}, ${data.size}, ${data.hash}, ${data.mime})`;
+    const { emitLive } = await import("@/lib/potion-live.server");
+    emitLive(context.userId);
+    return { version: data.version };
+  });
+

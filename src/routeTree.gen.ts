@@ -11,6 +11,9 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ApiPotionFileRouteImport } from './routes/api/potion-file'
+import { Route as ApiPotionLiveRouteImport } from './routes/api/potion-live'
+import { Route as ApiPotionRpcRouteImport } from './routes/api/potion-rpc'
 import { Route as STokenRouteImport } from './routes/s.$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
@@ -22,6 +25,21 @@ const IndexRoute = IndexRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPotionFileRoute = ApiPotionFileRouteImport.update({
+  id: '/api/potion-file',
+  path: '/api/potion-file',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPotionLiveRoute = ApiPotionLiveRouteImport.update({
+  id: '/api/potion-live',
+  path: '/api/potion-live',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPotionRpcRoute = ApiPotionRpcRouteImport.update({
+  id: '/api/potion-rpc',
+  path: '/api/potion-rpc',
   getParentRoute: () => rootRouteImport,
 } as any)
 const STokenRoute = STokenRouteImport.update({
@@ -38,12 +56,18 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/api/potion-file': typeof ApiPotionFileRoute
+  '/api/potion-live': typeof ApiPotionLiveRoute
+  '/api/potion-rpc': typeof ApiPotionRpcRoute
   '/s/$token': typeof STokenRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/api/potion-file': typeof ApiPotionFileRoute
+  '/api/potion-live': typeof ApiPotionLiveRoute
+  '/api/potion-rpc': typeof ApiPotionRpcRoute
   '/s/$token': typeof STokenRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
@@ -51,20 +75,48 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/api/potion-file': typeof ApiPotionFileRoute
+  '/api/potion-live': typeof ApiPotionLiveRoute
+  '/api/potion-rpc': typeof ApiPotionRpcRoute
   '/s/$token': typeof STokenRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/s/$token' | '/api/auth/$'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/api/potion-file'
+    | '/api/potion-live'
+    | '/api/potion-rpc'
+    | '/s/$token'
+    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/s/$token' | '/api/auth/$'
-  id: '__root__' | '/' | '/login' | '/s/$token' | '/api/auth/$'
+  to:
+    | '/'
+    | '/login'
+    | '/api/potion-file'
+    | '/api/potion-live'
+    | '/api/potion-rpc'
+    | '/s/$token'
+    | '/api/auth/$'
+  id:
+    | '__root__'
+    | '/'
+    | '/login'
+    | '/api/potion-file'
+    | '/api/potion-live'
+    | '/api/potion-rpc'
+    | '/s/$token'
+    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  ApiPotionFileRoute: typeof ApiPotionFileRoute
+  ApiPotionLiveRoute: typeof ApiPotionLiveRoute
+  ApiPotionRpcRoute: typeof ApiPotionRpcRoute
   STokenRoute: typeof STokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -83,6 +135,27 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/potion-file': {
+      id: '/api/potion-file'
+      path: '/api/potion-file'
+      fullPath: '/api/potion-file'
+      preLoaderRoute: typeof ApiPotionFileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/potion-live': {
+      id: '/api/potion-live'
+      path: '/api/potion-live'
+      fullPath: '/api/potion-live'
+      preLoaderRoute: typeof ApiPotionLiveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/potion-rpc': {
+      id: '/api/potion-rpc'
+      path: '/api/potion-rpc'
+      fullPath: '/api/potion-rpc'
+      preLoaderRoute: typeof ApiPotionRpcRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/s/$token': {
@@ -105,6 +178,9 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  ApiPotionFileRoute: ApiPotionFileRoute,
+  ApiPotionLiveRoute: ApiPotionLiveRoute,
+  ApiPotionRpcRoute: ApiPotionRpcRoute,
   STokenRoute: STokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }

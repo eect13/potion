@@ -80,6 +80,7 @@ try {
   check(/Sign in when you want/.test(sync), "sign-in copy is name-neutral");
   check(!/3 MB/.test(sync), "3 MB account cap gone");
   check(/Any size, including 1 GB/.test(sync), "no size cap copy");
+  check(/out of space/.test(sync), "only limit is free space");
   check(/Version history/.test(sync), "version history mentioned");
   check(/Comments sit on the file/.test(sync), "comments mentioned");
   check(/Live watches/.test(sync), "live watch mentioned");

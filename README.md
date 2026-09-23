@@ -31,12 +31,12 @@ Open Potion. You do not need an account. Files live on this computer until you s
 
 - **Folder** — list or grid, like a file explorer. Sort by name, date modified, type, or size. Search. Rename (F2). Copy, move, share, trash. Photos, videos, PDFs, zips, docs — any file, any size.
 - **Version history** — each save keeps a version (last 20 on disk). Restore writes a new current version.
-- **Comments** — notes on a file or folder, from the ••• menu.
-- **Live** — this window refreshes when another Potion tab on the same device changes the folder. Signed-in accounts also poll for other devices.
+- **Comments** — notes on a file or folder, and on a share link. No account needed to comment on a link.
+- **Live** — this window refreshes when another Potion tab changes the folder. Signed-in devices hold a live stream.
 - **Trash** — restore or delete forever.
-- **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to your account when you are signed in. The phone app is another window on Potion, not a second Sync.
+- **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to your account when you are signed in. The desktop app talks to a Potion server you run, not a hosted file service.
 
-Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder marked Don’t sync is skipped when Start runs. There is no size cap. A 1 GB file streams in 1 MB slices to disk (OPFS on this device, `.data/potion-blobs` on the server).
+Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder marked Don’t sync is skipped when Start runs. There is no size cap. A save is refused only when this device or the server is out of space. A stopped upload continues from the last saved slice. If both devices change a file, both versions stay in history.
 
 Do **not** host file bytes on Vercel. Vercel request bodies cap around 4.5 MB, so a gigabyte cannot land there. GitHub is the source. Run Potion yourself (`npm run dev` / `npm run build`) or use the desktop/Android apps.
 

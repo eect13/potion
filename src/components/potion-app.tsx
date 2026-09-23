@@ -57,7 +57,9 @@ import {
   subscribeSync,
   type SyncState,
 } from "@/lib/potion-sync";
-import { subscribePotion } from "@/lib/potion-watch";
+import { subscribeCloud, subscribePotion } from "@/lib/potion-watch";
+import { deviceRoom } from "@/lib/potion-blob";
+import { resumeUploads } from "@/lib/potion-api";
 import type { PotionComment, PotionVersion } from "@/lib/potion-api";
 
 type View = "folder" | "trash" | "sync";
@@ -99,6 +101,7 @@ export function PotionApp() {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [used, setUsed] = useState(0);
+  const [free, setFree] = useState<number | null>(null);
   const [renameFor, setRenameFor] = useState<PotionNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [busyNote, setBusyNote] = useState("");
@@ -170,6 +173,12 @@ export function PotionApp() {
     } catch {
       /* ignore */
     }
+    try {
+      const room = await deviceRoom();
+      setFree(room.quota > 0 ? room.free : null);
+    } catch {
+      setFree(null);
+    }
     setReady(true);
   }, [mode, parentId, isPending, search, view]);
 
@@ -182,14 +191,20 @@ export function PotionApp() {
       setLiveAt(Date.now());
       void refresh({ quiet: true });
     });
-    const poll = window.setInterval(() => {
-      if (mode === "cloud") void refresh({ quiet: true });
-    }, 8000);
+    const cloud = mode === "cloud" ? subscribeCloud(() => {
+      setLiveAt(Date.now());
+      void refresh({ quiet: true });
+    }) : () => undefined;
     return () => {
       unsub();
-      window.clearInterval(poll);
+      cloud();
     };
   }, [refresh, mode]);
+
+  useEffect(() => {
+    if (mode !== "cloud" || isPending) return;
+    void resumeUploads().then(() => refresh({ quiet: true })).catch(() => undefined);
+  }, [mode, isPending, refresh]);
 
   useEffect(() => {
     const wait = query.trim() ? 200 : 0;
@@ -480,6 +495,7 @@ export function PotionApp() {
           {collapsed ? null : (
             <p className="px-3 pb-2 font-mono text-xs text-faint tabular-nums">
               {formatBytes(used)} {mode === "cloud" ? "in your account" : "on this device"}
+              {free != null ? ` · ${formatBytes(free)} free` : ""}
             </p>
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} collapsed={collapsed} />
@@ -643,7 +659,7 @@ export function PotionApp() {
           {!ready || isPending ? (
             <div className="h-40 animate-pulse rounded-xl bg-card" />
           ) : view === "sync" ? (
-            <SyncPanel signedIn={!!user} mode={mode} used={used} />
+            <SyncPanel signedIn={!!user} mode={mode} used={used} free={free} />
           ) : (
             <FolderGrid
               layout={layout}
@@ -668,7 +684,7 @@ export function PotionApp() {
               onPreview={(n) => {
                 if (view === "trash") return;
                 const kind = fileKind(n.mime, n.name);
-                if (kind === "image" || kind === "video" || kind === "audio") setPreview(n);
+                if (kind === "image" || kind === "video" || kind === "audio" || kind === "pdf") setPreview(n);
                 else setSelected([n.id]);
               }}
               onGet={(n) => void download(n)}
@@ -1003,6 +1019,14 @@ function PreviewSheet({
   useEffect(() => {
     let gone = false;
     let objectUrl: string | null = null;
+    const kindNow = fileKind(node.mime, node.name);
+    const stream = kindNow === "video" || kindNow === "audio" || kindNow === "pdf" ? api.mediaUrl(node) : null;
+    if (mode === "cloud" && stream) {
+      setUrl(stream);
+      return () => {
+        gone = true;
+      };
+    }
     void (async () => {
       const file = await api.getFile(mode, node.id);
       if (!file || gone) return;
@@ -1013,7 +1037,7 @@ function PreviewSheet({
       gone = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [mode, node.id]);
+  }, [mode, node.id, node.version, node.mime, node.name]);
   return (
     <div className="space-y-4">
       <h3 className="truncate font-serif text-2xl italic">{node.name}</h3>
@@ -1023,6 +1047,7 @@ function PreviewSheet({
       {url && kind === "image" ? <img src={url} alt={node.name} className="max-h-80 w-full rounded-lg bg-elevated object-contain" /> : null}
       {url && kind === "video" ? <video src={url} controls className="max-h-80 w-full rounded-lg bg-elevated" /> : null}
       {url && kind === "audio" ? <audio src={url} controls className="w-full" /> : null}
+      {url && kind === "pdf" ? <iframe src={url} title={node.name} className="h-80 w-full rounded-lg bg-elevated" /> : null}
       <div className="flex justify-end gap-2">
         <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
           Close
@@ -1406,7 +1431,7 @@ function CommentsSheet({
         {rows.map((c) => (
           <li key={c.id} className="rounded-lg bg-elevated px-3 py-2">
             <p className="text-sm text-foreground">{c.body}</p>
-            <p className="mt-1 text-xs text-faint">{formatWhen(c.createdAt)}</p>
+            <p className="mt-1 text-xs text-faint">{c.author ? `${c.author} · ` : ""}{formatWhen(c.createdAt)}</p>
           </li>
         ))}
       </ul>
@@ -1500,7 +1525,7 @@ function ShareSheet({ name, url, onCopy, onClose }: { name: string; url: string;
   );
 }
 
-function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMode; used: number }) {
+function SyncPanel({ signedIn, mode, used, free }: { signedIn: boolean; mode: StoreMode; used: number; free: number | null }) {
   const [job, setJob] = useState<SyncState>(() => ({
     status: "idle",
     progress: 0,
@@ -1510,7 +1535,17 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
     error: null,
     skipped: 0,
   }));
+  const [server, setServer] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   useEffect(() => subscribeSync(setJob), []);
+  useEffect(() => {
+    try {
+      setServer(localStorage.getItem("potion-server") || "");
+    } catch {
+      /* ignore */
+    }
+  }, []);
   const running = job.status === "running";
   const paused = job.status === "paused";
   const btn = "inline-flex h-11 items-center gap-2 rounded-full border border-border px-4 text-sm disabled:opacity-40";
@@ -1519,7 +1554,10 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
       <section className="space-y-4 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">Sync</h2>
         <p>Start walks folders marked Syncing. Pause holds the line. Stop clears it. Retry starts over.</p>
-        <p className="font-mono text-xs text-faint tabular-nums">{formatBytes(used)} {signedIn ? "in your account" : "on this device"}</p>
+        <p className="font-mono text-xs text-faint tabular-nums">
+          {formatBytes(used)} {signedIn ? "in your account" : "on this device"}
+          {free != null ? ` · ${formatBytes(free)} free` : ""}
+        </p>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -1569,9 +1607,17 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
           </li>
           <li>
             Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Any size, including 1 GB.
+            There is no size cap. A save stops only when this device or the server is out of space.
           </li>
           <li>
-            Version history keeps the last 20 saves. Comments sit on the file. Live watches this folder in other Potion windows.
+            If a large upload stops, drop the same file again or reopen Potion. It continues from the last saved slice.
+          </li>
+          <li>
+            If a file changes on two devices, both versions stay in history. Neither one is thrown away.
+          </li>
+          <li>
+            Version history keeps the last 20 saves. Comments sit on the file. A share link can take comments too.
+            Live watches this folder. Signed-in devices use a live stream.
           </li>
         </ol>
         <p className="flex items-start gap-2 pt-1">
@@ -1594,6 +1640,62 @@ function SyncPanel({ signedIn, mode, used }: { signedIn: boolean; mode: StoreMod
             Sign in (optional)
           </Link>
         ) : null}
+      </section>
+      <section className="space-y-3 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
+        <h2 className="text-foreground">Your server</h2>
+        <p>The desktop app syncs to a Potion server you run. It does not use a hosted file service. Leave this empty in the browser.</p>
+        <input
+          value={server}
+          onChange={(e) => setServer(e.target.value)}
+          placeholder="https://potion.example"
+          className="h-11 w-full rounded-lg border border-border bg-background px-3"
+        />
+        <button
+          type="button"
+          className="h-11 rounded-full border border-border px-4 text-sm"
+          onClick={() => {
+            try {
+              localStorage.setItem("potion-server", server.trim().replace(/\/$/, ""));
+            } catch {
+              /* ignore */
+            }
+          }}
+        >
+          Save server
+        </button>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="h-11 rounded-lg border border-border bg-background px-3"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="h-11 rounded-lg border border-border bg-background px-3"
+          />
+        </div>
+        <button
+          type="button"
+          className="h-11 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground"
+          onClick={() => {
+            void (async () => {
+              const { desktopSignIn } = await import("@/lib/potion-cloud.desktop");
+              try {
+                localStorage.setItem("potion-server", server.trim().replace(/\/$/, ""));
+                const ok = await desktopSignIn(email, password);
+                window.alert(ok ? "Desktop signed in to your server" : "Signed in, but no token came back");
+              } catch (err) {
+                window.alert(err instanceof Error ? err.message : "Sign-in failed");
+              }
+            })();
+          }}
+        >
+          Sign in on that server
+        </button>
       </section>
     </div>
   );

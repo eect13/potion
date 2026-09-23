@@ -1,8 +1,10 @@
 import * as db from "@/lib/potion-db";
 import type { PotionComment, PotionNode, PotionVersion } from "@/lib/potion-db";
 import * as cloud from "@/lib/potion-cloud";
-import { fingerprint, fromBase64, readLocalBlob, SLICE, toBase64, writeLocalBlob } from "@/lib/potion-blob";
+import { assertRoom, fingerprint, fromBase64, readLocalBlob, toBase64, writeLocalBlob } from "@/lib/potion-blob";
 import { notifyPotion } from "@/lib/potion-watch";
+import { clearJob, jobFor, listJobs, saveJob } from "@/lib/potion-resume";
+import { getBearerToken } from "@/lib/auth/client";
 
 export type { PotionComment, PotionNode, PotionVersion };
 export type StoreMode = "local" | "cloud";
@@ -22,6 +24,8 @@ export type TreeEntry = {
 };
 
 export type PutProgress = { done: number; total: number; name: string };
+
+const NET = 8 * 1024 * 1024;
 
 function asFile(name: string, mime: string | null, blob: Blob) {
   return new File([blob], name, { type: mime || blob.type || "application/octet-stream" });
@@ -147,15 +151,17 @@ async function uploadChunks(
   blob: Blob,
   name: string,
   onProgress?: (p: PutProgress) => void,
+  start = 0,
 ) {
-  if (blob.size === 0) {
+  const from = start - (start % NET);
+  if (blob.size === 0 || from >= blob.size) {
     onProgress?.({ done: 1, total: 1, name });
     return;
   }
-  const total = Math.max(1, Math.ceil(blob.size / SLICE));
-  let done = 0;
-  for (let offset = 0; offset < blob.size; offset += SLICE) {
-    const slice = blob.slice(offset, Math.min(offset + SLICE, blob.size));
+  const total = Math.max(1, Math.ceil(blob.size / NET));
+  let done = Math.floor(from / NET);
+  for (let offset = from; offset < blob.size; offset += NET) {
+    const slice = blob.slice(offset, Math.min(offset + NET, blob.size));
     const buf = await slice.arrayBuffer();
     await cloud.putBlobChunk({ data: { id, version, offset, data: toBase64(buf) } });
     done += 1;
@@ -167,9 +173,9 @@ async function downloadChunks(id: string, version: number, size: number, mime: s
   const cached = await readLocalBlob(id, version);
   if (cached && cached.size === size) return cached;
   const parts: BlobPart[] = [];
-  for (let offset = 0; offset < size; offset += SLICE) {
+  for (let offset = 0; offset < size; offset += NET) {
     const chunk = await cloud.getBlobChunk({
-      data: { id, version, offset, length: SLICE },
+      data: { id, version, offset, length: NET },
     });
     if (!chunk.read) break;
     parts.push(fromBase64(chunk.data));
@@ -185,17 +191,51 @@ async function putCloudBlob(
   mime: string,
   blob: Blob,
   onProgress?: (p: PutProgress) => void,
+  local?: { id: string; version: number },
 ) {
   const hash = await fingerprint(blob);
-  const started = await cloud.putCloud({
-    data: { parentId, name, mime, size: blob.size, hash },
+  const pending = jobFor(hash);
+  let started =
+    pending?.cloudId && pending.version && pending.size === blob.size
+      ? { id: pending.cloudId, version: pending.version }
+      : await cloud.putCloud({ data: { parentId, name, mime, size: blob.size, hash } });
+  saveJob({
+    hash,
+    name,
+    mime,
+    size: blob.size,
+    parentId,
+    cloudId: started.id,
+    version: started.version,
+    localId: local?.id,
+    localVersion: local?.version,
   });
-  await uploadChunks(started.id, started.version, blob, name, onProgress);
+  let offset = 0;
+  try {
+    const stat = await cloud.statBlob({ data: { id: started.id, version: started.version } });
+    offset = Math.min(stat.size, blob.size);
+  } catch {
+    offset = 0;
+  }
+  await uploadChunks(started.id, started.version, blob, name, onProgress, offset);
   await cloud.commitCloud({
     data: { id: started.id, version: started.version, hash, size: blob.size, mime },
   });
+  clearJob(hash);
   afterCloud();
   return started;
+}
+
+export async function resumeUploads(onProgress?: (p: PutProgress) => void) {
+  for (const job of listJobs()) {
+    if (!job.localId || !job.localVersion || !job.hash) continue;
+    const blob = await readLocalBlob(job.localId, job.localVersion);
+    if (!blob || blob.size !== job.size) continue;
+    await putCloudBlob(job.parentId, job.name, job.mime, blob, onProgress, {
+      id: job.localId,
+      version: job.localVersion,
+    });
+  }
 }
 
 export async function putFiles(
@@ -205,21 +245,26 @@ export async function putFiles(
   onProgress?: (p: PutProgress) => void,
 ) {
   if (mode === "cloud") {
-    for (const f of files) {
-      await putCloudBlob(parentId, f.name, f.type || db.guessMime(f.name), f, onProgress);
-    }
+    let localParent: string | null = null;
     try {
       const crumbs = await pathOf("cloud", parentId);
-      const localParent = await ensureFolderPath(
+      localParent = await ensureFolderPath(
         "local",
         crumbs.map((c) => c.name),
       );
-      await db.putFiles(localParent, files);
     } catch {
-      /* local cache is optional */
+      localParent = null;
+    }
+    for (const f of files) {
+      await assertRoom(f.size);
+      const mime = f.type || db.guessMime(f.name);
+      const saved = await db.putFiles(localParent, [f]).catch(() => []);
+      const local = saved[0];
+      await putCloudBlob(parentId, f.name, mime, f, onProgress, local ? { id: local.id, version: local.version } : undefined);
     }
     return;
   }
+  for (const f of files) await assertRoom(f.size);
   return db.putFiles(parentId, files);
 }
 
@@ -354,13 +399,63 @@ export async function pullSharedFile(token: string, id: string): Promise<PotionF
   const file = await cloud.getSharedFileCloud({ data: { token, id } });
   if (!file) return null;
   const parts: BlobPart[] = [];
-  for (let offset = 0; offset < file.size; offset += SLICE) {
+  for (let offset = 0; offset < file.size; offset += NET) {
     const chunk = await cloud.getSharedBlobChunk({
-      data: { token, id, version: file.version, offset, length: SLICE },
+      data: { token, id, version: file.version, offset, length: NET },
     });
     if (!chunk.read) break;
     parts.push(fromBase64(chunk.data));
   }
   const blob = new Blob(parts, { type: file.mime || "application/octet-stream" });
   return { name: file.name, mime: file.mime, blob, size: file.size, version: file.version };
+}
+
+export type SyncBase = { hash: string | null; conflict: string | null };
+
+export async function loadBases(): Promise<Record<string, SyncBase>> {
+  const rows = await cloud.listBasesCloud();
+  return Object.fromEntries(rows.map((r) => [r.path, { hash: r.hash, conflict: r.conflict }]));
+}
+
+export async function rememberBase(path: string, hash: string | null, conflict: string | null) {
+  await cloud.setBaseCloud({ data: { path, hash, conflict } });
+}
+
+export async function keepBoth(localId: string, remoteId: string) {
+  const local = await db.currentFile(localId);
+  const remote = await getFile("cloud", remoteId);
+  if (remote) await db.stashVersion(localId, remote.blob);
+  if (local) {
+    const hash = local.blob.size ? await fingerprint(local.blob) : "";
+    const started = await cloud.beginStashCloud({ data: remoteId });
+    await uploadChunks(started.id, started.version, local.blob, local.name);
+    await cloud.commitStashCloud({
+      data: {
+        id: started.id,
+        version: started.version,
+        hash: hash || local.blob.size.toString(16),
+        size: local.blob.size,
+        mime: local.mime || "application/octet-stream",
+      },
+    });
+  }
+  afterCloud();
+}
+
+export function mediaUrl(node: { id: string; version: number }, token?: string) {
+  const q = new URLSearchParams({ id: node.id, version: String(node.version || 1) });
+  if (token) q.set("token", token);
+  else {
+    const bearer = getBearerToken();
+    if (bearer) q.set("bearer", bearer);
+  }
+  return `/api/potion-file?${q}`;
+}
+
+export async function listSharedComments(token: string) {
+  return cloud.listSharedComments({ data: token });
+}
+
+export async function addSharedComment(token: string, body: string, author: string) {
+  return cloud.addSharedComment({ data: { token, body, author } });
 }
