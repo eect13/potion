@@ -1,27 +1,13 @@
 /** Stream large files to OPFS (or chunked IndexedDB). Never load a whole gigabyte into RAM. */
 
 import { fromBase64, toBase64 } from "./potion-bytes.ts";
+import { fingerprint, LEAF } from "./potion-merkle.ts";
 
-export { fromBase64, toBase64 };
-export const SLICE = 1024 * 1024;
+export { fromBase64, toBase64, fingerprint };
+export const SLICE = LEAF;
 const KEEP_VERSIONS = 20;
 const OPFS_DIR = "potion-blobs";
 const PARTS_DB = "potion-parts";
-
-function hex(buf: ArrayBuffer) {
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-export async function fingerprint(source: Blob): Promise<string> {
-  const parts: string[] = [];
-  for (let offset = 0; offset < source.size; offset += SLICE) {
-    const slice = source.slice(offset, Math.min(offset + SLICE, source.size));
-    const digest = await crypto.subtle.digest("SHA-256", await slice.arrayBuffer());
-    parts.push(hex(digest));
-  }
-  const joined = new TextEncoder().encode(parts.join("") + ":" + source.size);
-  return hex(await crypto.subtle.digest("SHA-256", joined));
-}
 
 function blobName(nodeId: string, version: number) {
   return `${nodeId}.v${version}`;
@@ -59,28 +45,105 @@ export async function persistStorage() {
   }
 }
 
-export async function writeLocalBlob(nodeId: string, version: number, source: Blob, start = 0): Promise<void> {
-  await persistStorage();
-  const from = Math.max(0, Math.min(start, source.size));
-  const dir = await opfsDir();
-  if (dir) {
-    const handle = await dir.getFileHandle(blobName(nodeId, version), { create: true });
-    const writable = await handle.createWritable({ keepExistingData: from > 0 });
-    try {
-      if (from > 0) await writable.seek(from);
-      const reader = source.slice(from).stream().getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        await writable.write(value);
-      }
-    } finally {
-      await writable.close();
-    }
-    await pruneOpfs(dir, nodeId, version);
-    return;
+export function spaceError(err: unknown): Error {
+  const name = err && typeof err === "object" && "name" in err ? String((err as { name?: string }).name) : "";
+  if (name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED") {
+    return new Error("Not enough space on this device");
   }
-  await writeIdbParts(nodeId, version, source, from);
+  if (err instanceof Error) return err;
+  return new Error("Save failed");
+}
+
+export async function writeLocalBlob(nodeId: string, version: number, source: Blob, start = 0): Promise<void> {
+  try {
+    await persistStorage();
+    const from = Math.max(0, Math.min(start, source.size));
+    const dir = await opfsDir();
+    if (dir) {
+      const handle = await dir.getFileHandle(blobName(nodeId, version), { create: true });
+      const writable = await handle.createWritable({ keepExistingData: from > 0 });
+      try {
+        if (from > 0) await writable.seek(from);
+        const reader = source.slice(from).stream().getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          await writable.write(value);
+        }
+      } finally {
+        await writable.close();
+      }
+      await pruneOpfs(dir, nodeId, version);
+      return;
+    }
+    await writeIdbParts(nodeId, version, source, from);
+  } catch (err) {
+    throw spaceError(err);
+  }
+}
+
+/** Write one slice at a file offset. Does not prune. Caller checks the final size. */
+export async function writeLocalSlice(nodeId: string, version: number, bytes: Uint8Array, offset: number) {
+  try {
+    await persistStorage();
+    const dir = await opfsDir();
+    if (dir) {
+      const handle = await dir.getFileHandle(blobName(nodeId, version), { create: true });
+      const writable = await handle.createWritable({ keepExistingData: offset > 0 });
+      try {
+        if (offset > 0) await writable.seek(offset);
+        const copy = new Uint8Array(bytes.byteLength);
+        copy.set(bytes);
+        await writable.write(copy);
+      } finally {
+        await writable.close();
+      }
+      return;
+    }
+    const db = await openParts();
+    const index = Math.floor(offset / SLICE);
+    const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction("parts", "readwrite");
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.objectStore("parts").put({
+        key: `${nodeId}:${version}:${index}`,
+        nodeId,
+        version,
+        index,
+        bytes: copy,
+      });
+    });
+    db.close();
+  } catch (err) {
+    throw spaceError(err);
+  }
+}
+
+export async function pruneLocal(nodeId: string, latest: number) {
+  const dir = await opfsDir();
+  if (dir) await pruneOpfs(dir, nodeId, latest);
+  await pruneIdb(nodeId, latest);
+}
+
+export async function deleteLocalVersion(nodeId: string, version: number) {
+  const dir = await opfsDir();
+  if (dir) await dir.removeEntry(blobName(nodeId, version)).catch(() => undefined);
+  const db = await openParts();
+  await new Promise<void>((resolve, reject) => {
+    const t = db.transaction("parts", "readwrite");
+    const store = t.objectStore("parts");
+    const req = store.index("node").getAll(nodeId);
+    req.onsuccess = () => {
+      for (const row of req.result as Array<{ key: string; version: number }>) {
+        if (row.version === version) store.delete(row.key);
+      }
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+  db.close();
 }
 
 export async function readLocalBlob(nodeId: string, version: number): Promise<Blob | null> {
@@ -119,7 +182,7 @@ export async function listLocalVersions(nodeId: string): Promise<number[]> {
   const dir = await opfsDir();
   if (dir) {
     for (const name of await listOpfsNames(dir)) {
-      if (!name.startsWith(`${nodeId}.v`)) continue;
+      if (!name.startsWith(`${nodeId}.v`) || name.endsWith(".leaves")) continue;
       const n = Number(name.slice(nodeId.length + 2));
       if (Number.isFinite(n)) found.add(n);
     }
@@ -134,7 +197,7 @@ async function pruneOpfs(dir: FileSystemDirectoryHandle, nodeId: string, latest:
   const drop: string[] = [];
   for (const name of await listOpfsNames(dir)) {
     if (!name.startsWith(`${nodeId}.v`)) continue;
-    const n = Number(name.slice(nodeId.length + 2));
+    const n = Number.parseInt(name.slice(nodeId.length + 2), 10);
     if (Number.isFinite(n) && n < min) drop.push(name);
   }
   for (const name of drop) await dir.removeEntry(name).catch(() => undefined);
@@ -142,12 +205,15 @@ async function pruneOpfs(dir: FileSystemDirectoryHandle, nodeId: string, latest:
 
 function openParts(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(PARTS_DB, 1);
+    const req = indexedDB.open(PARTS_DB, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains("parts")) {
         const s = db.createObjectStore("parts", { keyPath: "key" });
         s.createIndex("node", "nodeId");
+      }
+      if (!db.objectStoreNames.contains("leaves")) {
+        db.createObjectStore("leaves", { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -245,6 +311,60 @@ async function deleteIdbParts(nodeId: string) {
     t.onerror = () => reject(t.error);
   });
   db.close();
+}
+
+export async function saveLeafList(nodeId: string, version: number, leaves: string[]) {
+  const key = `${nodeId}:${version}`;
+  try {
+    const dir = await opfsDir();
+    if (dir) {
+      const handle = await dir.getFileHandle(`${blobName(nodeId, version)}.leaves`, { create: true });
+      const writable = await handle.createWritable();
+      try {
+        await writable.write(JSON.stringify(leaves));
+      } finally {
+        await writable.close();
+      }
+      return;
+    }
+  } catch {
+    /* IndexedDB */
+  }
+  const db = await openParts();
+  await new Promise<void>((resolve, reject) => {
+    const t = db.transaction("leaves", "readwrite");
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.objectStore("leaves").put({ key, leaves });
+  });
+  db.close();
+}
+
+export async function loadLeafList(nodeId: string, version: number): Promise<string[] | null> {
+  try {
+    const dir = await opfsDir();
+    if (dir) {
+      const handle = await dir.getFileHandle(`${blobName(nodeId, version)}.leaves`);
+      const text = await (await handle.getFile()).text();
+      const parsed = JSON.parse(text) as unknown;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed as string[];
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const db = await openParts();
+    const row = await new Promise<{ leaves?: string[] } | undefined>((resolve, reject) => {
+      const t = db.transaction("leaves", "readonly");
+      const req = t.objectStore("leaves").get(`${nodeId}:${version}`);
+      req.onsuccess = () => resolve(req.result as { leaves?: string[] } | undefined);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return row?.leaves ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function deviceRoom() {

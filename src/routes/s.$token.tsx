@@ -35,6 +35,17 @@ function SharePage() {
   const [comments, setComments] = useState<{ id: string; body: string; author: string | null; createdAt: number }[]>([]);
   const [note, setNote] = useState("");
   const [who, setWho] = useState("");
+  const [folderId, setFolderId] = useState<string | null>(null);
+
+  async function loadKids(id: string, isRemote: boolean) {
+    if (!isRemote) {
+      const list = await db.listChildren(id);
+      setKids(list.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
+      return;
+    }
+    const list = await cloud.listSharedChildren({ data: { token, id } });
+    setKids(list.map((n) => ({ id: n.id, name: n.name, kind: n.kind, size: n.size })));
+  }
 
   useEffect(() => {
     void (async () => {
@@ -162,7 +173,20 @@ function SharePage() {
           </button>
         ) : null}
         {state === "ready" && kind === "folder" ? (
-          <ul className="mt-6 space-y-2">
+          <div className="mt-6 space-y-2">
+            {folderId ? (
+              <button
+                type="button"
+                className="h-11 text-sm text-muted"
+                onClick={() => {
+                  setFolderId(null);
+                  if (nodeId) void loadKids(nodeId, remote);
+                }}
+              >
+                Up
+              </button>
+            ) : null}
+            <ul className="space-y-2">
             {kids.length === 0 ? <p className="text-sm text-muted">Empty folder.</p> : null}
             {kids.map((k) => (
               <li key={k.id} className="flex items-center justify-between gap-3 rounded-lg bg-elevated px-3 py-2 text-sm">
@@ -172,11 +196,21 @@ function SharePage() {
                     Get
                   </button>
                 ) : (
-                  <span className="text-xs text-faint">Folder</span>
+                  <button
+                    type="button"
+                    className="h-11 text-sm text-muted"
+                    onClick={() => {
+                      setFolderId(k.id);
+                      void loadKids(k.id, remote);
+                    }}
+                  >
+                    Open
+                  </button>
                 )}
               </li>
             ))}
-          </ul>
+            </ul>
+          </div>
         ) : null}
         {state === "ready" && remote && kind === "file" && (fileKind(mime, name) === "video" || fileKind(mime, name) === "audio" || fileKind(mime, name) === "pdf") ? (
           <div className="mt-4">

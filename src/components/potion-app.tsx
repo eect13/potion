@@ -252,14 +252,18 @@ export function PotionApp() {
   }
 
   async function download(node: PotionNode) {
-    const file = await api.getFile(mode, node.id);
-    if (!file) return;
-    const url = URL.createObjectURL(file.blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = file.name;
-    a.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    try {
+      const file = await api.getFile(mode, node.id);
+      if (!file) return;
+      const url = URL.createObjectURL(file.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (err) {
+      ping(err instanceof Error ? err.message : "Could not download");
+    }
   }
 
   async function copyItem(node: PotionNode) {
@@ -313,9 +317,25 @@ export function PotionApp() {
         <ShareSheet
           name={node.name}
           url={url}
+          localOnly={mode !== "cloud"}
           onCopy={() => {
             void navigator.clipboard.writeText(url);
             ping("Link copied");
+          }}
+          onStop={() => {
+            void api.revokeShare(mode, share.token).then(
+              () => {
+                ping("Link stopped");
+                setSheet(null);
+              },
+              (err: unknown) => ping(err instanceof Error ? err.message : "Could not stop the link"),
+            );
+          }}
+          onExpire={() => {
+            void api.expireShare(mode, share.token, 7).then(
+              () => ping("Link expires in 7 days"),
+              (err: unknown) => ping(err instanceof Error ? err.message : "Could not set expiry"),
+            );
           }}
           onClose={() => setSheet(null)}
         />,
@@ -538,6 +558,7 @@ export function PotionApp() {
               className="h-11 rounded-full border border-border px-4 text-sm disabled:opacity-40"
               disabled={trashItems.length === 0}
               onClick={() => {
+                if (!window.confirm("Empty trash? Files in it are deleted forever.")) return;
                 void (async () => {
                   try {
                     await api.emptyTrash(mode);
@@ -706,6 +727,7 @@ export function PotionApp() {
                 }
               }}
               onPurge={async (n) => {
+                if (!window.confirm(`Delete ${n.name} forever? This cannot be undone.`)) return;
                 try {
                   await api.purgeNode(mode, n.id);
                   ping(`Deleted ${n.name} forever`);
@@ -973,6 +995,14 @@ function NodeGlyph({ node, mode, layout }: { node: PotionNode; mode: StoreMode; 
     let objectUrl: string | null = null;
     void (async () => {
       try {
+        if (mode === "cloud") {
+          await api.warmMediaTicket();
+          if (gone) return;
+          const src = api.mediaUrl(node);
+          thumbs.set(node.id, src);
+          setUrl(src);
+          return;
+        }
         const file = await api.getFile(mode, node.id);
         if (!file || gone) return;
         objectUrl = URL.createObjectURL(file.blob);
@@ -1020,9 +1050,12 @@ function PreviewSheet({
     let gone = false;
     let objectUrl: string | null = null;
     const kindNow = fileKind(node.mime, node.name);
-    const stream = kindNow === "video" || kindNow === "audio" || kindNow === "pdf" ? api.mediaUrl(node) : null;
-    if (mode === "cloud" && stream) {
-      setUrl(stream);
+    const canStream =
+      mode === "cloud" && (kindNow === "video" || kindNow === "audio" || kindNow === "pdf" || kindNow === "image");
+    if (canStream) {
+      void api.warmMediaTicket().then(() => {
+        if (!gone) setUrl(api.mediaUrl(node));
+      }).catch(() => undefined);
       return () => {
         gone = true;
       };
@@ -1504,11 +1537,31 @@ function MoveSheet({
   );
 }
 
-function ShareSheet({ name, url, onCopy, onClose }: { name: string; url: string; onCopy: () => void; onClose: () => void }) {
+function ShareSheet({
+  name,
+  url,
+  localOnly,
+  onCopy,
+  onClose,
+  onStop,
+  onExpire,
+}: {
+  name: string;
+  url: string;
+  localOnly?: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+  onStop?: () => void;
+  onExpire?: () => void;
+}) {
   return (
     <div className="space-y-4">
       <h3 className="font-serif text-2xl italic">Share {name}</h3>
-      <p className="text-sm text-muted">Anyone with the link can view. No account needed on their side.</p>
+      <p className="text-sm text-muted">
+        {localOnly
+          ? "This link only opens in this browser. Sign in if you want someone else to open it."
+          : "Anyone with the link can view, including files inside a shared folder. No account needed on their side."}
+      </p>
       <div className="flex items-center gap-2 rounded-xl bg-elevated p-2">
         <code className="min-w-0 flex-1 truncate px-2 font-mono text-xs">{url}</code>
         <button type="button" onClick={onCopy} className="inline-flex h-11 items-center gap-1 rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">
@@ -1516,7 +1569,17 @@ function ShareSheet({ name, url, onCopy, onClose }: { name: string; url: string;
           Copy link
         </button>
       </div>
-      <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        {onExpire ? (
+          <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onExpire}>
+            Expire in 7 days
+          </button>
+        ) : null}
+        {onStop ? (
+          <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onStop}>
+            Stop this link
+          </button>
+        ) : null}
         <button type="button" className="h-11 rounded-full border border-border px-4 text-sm" onClick={onClose}>
           Done
         </button>
@@ -1608,9 +1671,13 @@ function SyncPanel({ signedIn, mode, used, free }: { signedIn: boolean; mode: St
           <li>
             Sign in, then Start. New files added while signed in start a catch-up on their own. Pictures count. Any size, including 1 GB.
             There is no size cap. A save stops only when this device or the server is out of space.
+            Large files stay in this browser’s private storage. Chrome may use a large share of the disk. Safari often starts near 1 GB and asks before it grows. A private window can drop files when it closes.
+            Each slice is hashed. A changed file sends only the slices that differ. A folder that did not change is one check. A damaged upload is refused.
+            A rename follows the file, so the old name does not come back as a second copy. Empty folders sync too.
           </li>
           <li>
             If a large upload stops, drop the same file again or reopen Potion. It continues from the last saved slice.
+            Only one window syncs at a time.
           </li>
           <li>
             If a file changes on two devices, both versions stay in history. Neither one is thrown away.
@@ -1633,7 +1700,7 @@ function SyncPanel({ signedIn, mode, used, free }: { signedIn: boolean; mode: St
       </section>
       <section className="space-y-2 rounded-2xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="text-foreground">Sign in when you want</h2>
-        <p>The same account on two devices shares the same files. Nothing copies until you sign in on the other device too.</p>
+        <p>The same account on two devices shares the same files. Nothing copies until you sign in on the other device too. While you are signed in, Folder shows the account. This device keeps a copy so a stopped upload can continue.</p>
         <p className="text-foreground">{signedIn ? "You are signed in. These are your files." : "You are not signed in. Files stay on this device."}</p>
         {!signedIn ? (
           <Link to="/login" className="mt-2 inline-flex h-11 items-center rounded-full bg-accent px-4 text-sm font-medium text-accent-foreground">

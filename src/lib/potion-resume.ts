@@ -1,6 +1,7 @@
 const KEY = "potion-resume";
 
 export type ResumeJob = {
+  key: string;
   hash: string;
   name: string;
   mime: string;
@@ -11,6 +12,11 @@ export type ResumeJob = {
   localId?: string;
   localVersion?: number;
 };
+
+/** Two different files can share bytes. Resume follows the folder and the name. */
+export function jobKey(parentId: string | null, name: string) {
+  return `${parentId ?? ""}/${name}`;
+}
 
 function readAll(): ResumeJob[] {
   try {
@@ -34,16 +40,18 @@ export function listJobs() {
   return readAll();
 }
 
-export function jobFor(hash: string) {
-  return readAll().find((j) => j.hash === hash);
+export function jobFor(parentId: string | null, name: string) {
+  const key = jobKey(parentId, name);
+  return readAll().find((j) => j.key === key || (!j.key && j.parentId === parentId && j.name === name));
 }
 
 export function saveJob(job: ResumeJob) {
-  const all = readAll().filter((j) => j.hash !== job.hash);
+  const all = readAll().filter((j) => j.key !== job.key);
   all.push(job);
   writeAll(all);
 }
 
-export function clearJob(hash: string) {
-  writeAll(readAll().filter((j) => j.hash !== hash));
+export function clearJob(parentId: string | null, name: string) {
+  const key = jobKey(parentId, name);
+  writeAll(readAll().filter((j) => j.key !== key));
 }

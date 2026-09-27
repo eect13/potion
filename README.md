@@ -36,9 +36,21 @@ Open Potion. You do not need an account. Files live on this computer until you s
 - **Trash** — restore or delete forever.
 - **Sync** — Start, Pause, Stop, Retry. Copies every file in folders marked Syncing (pictures included) to your account when you are signed in. The desktop app talks to a Potion server you run, not a hosted file service.
 
-Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder marked Don’t sync is skipped when Start runs. There is no size cap. A save is refused only when this device or the server is out of space. A stopped upload continues from the last saved slice. If both devices change a file, both versions stay in history.
+Advice: sign in on each device you care about, then Start once. New files added while signed in start a catch-up on their own. A folder marked Don’t sync is skipped when Start runs, and so is a file you mark the same way. There is no size cap. A save is refused only when this device or the server is out of space. A stopped upload continues from the last saved slice of that file, not of some other file that happens to match. If both devices change a file, both versions stay in history.
 
 Do **not** host file bytes on Vercel. Vercel request bodies cap around 4.5 MB, so a gigabyte cannot land there. GitHub is the source. Run Potion yourself (`npm run dev` / `npm run build`) or use the desktop/Android apps.
+
+## Sync (what we use)
+
+Compare file roots, not clocks. A file is 1 MB SHA-256 leaves; the fingerprint is SHA-256 of those leaves plus size. A binary tree over the leaves finds the dirty slices, so a one-megabyte edit sends that slice and a few hashes, not the whole list. Same folder root → skip that folder. Different file root → send only the leaves that changed. Both sides changed → keep both versions. A rename or move follows the file id, so the old path is not copied back as a second file. Empty folders sync too.
+
+Not used, on purpose: content-defined chunking and rsync rolling hashes. CRDTs (wrong model for opaque blobs). Last-writer-wins (destroys a save).
+
+Two windows on this device share one Web Lock named `potion:sync`. The other window waits or shows that sync is already running. The lock dies if the tab closes.
+
+## Space
+
+Files live in OPFS (or chunked IndexedDB). No Potion cap. Chrome/Edge ~60% of disk; Firefox ~10% (or half if persistent); Safari often starts near 1 GB and asks. Private windows can drop files. `estimate()` is a hint.
 
 ## Self-host (web)
 

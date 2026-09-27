@@ -43,30 +43,39 @@ export function subscribePotion(fn: () => void) {
 
 /** Signed-in devices hold a live stream. A slow poll is only the fallback. */
 export function subscribeCloud(fn: () => void) {
-  let es: EventSource | null = null;
   let poll = 0;
   let stopped = false;
-  let bearer = "";
+  const ac = new AbortController();
+  const headers: Record<string, string> = { accept: "text/event-stream" };
   try {
-    bearer = sessionStorage.getItem("grok-auth.bearer-token") || "";
+    const bearer = sessionStorage.getItem("grok-auth.bearer-token") || "";
+    if (bearer) headers.authorization = `Bearer ${bearer}`;
   } catch {
-    bearer = "";
+    /* ignore */
   }
-  const q = bearer ? `?bearer=${encodeURIComponent(bearer)}` : "";
-  try {
-    es = new EventSource(`/api/potion-live${q}`);
-    es.onmessage = () => fn();
-    es.onerror = () => {
-      es?.close();
+  void (async () => {
+    try {
+      const res = await fetch("/api/potion-live", { headers, signal: ac.signal });
+      if (!res.ok || !res.body) throw new Error("live");
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (!stopped) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        if (!buf.includes("data:")) continue;
+        buf = "";
+        fn();
+      }
+    } catch {
       if (stopped || poll) return;
       poll = window.setInterval(fn, 20000);
-    };
-  } catch {
-    poll = window.setInterval(fn, 20000);
-  }
+    }
+  })();
   return () => {
     stopped = true;
-    es?.close();
+    ac.abort();
     if (poll) window.clearInterval(poll);
   };
 }

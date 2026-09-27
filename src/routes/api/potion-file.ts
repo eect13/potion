@@ -5,6 +5,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { requireUserId } from "@/lib/auth/verify.server";
 import { getSql } from "@/lib/db";
 import { blobFilePath } from "@/lib/potion-blob-server";
+import { resolveShare } from "@/lib/potion-cloud";
+import { userForTicket } from "@/lib/potion-ticket.server";
 
 export const Route = createFileRoute("/api/potion-file")({
   server: {
@@ -14,20 +16,20 @@ export const Route = createFileRoute("/api/potion-file")({
         const id = url.searchParams.get("id") || "";
         const version = Number(url.searchParams.get("version") || "0");
         const token = url.searchParams.get("token");
+        const ticket = url.searchParams.get("ticket");
         const sql = await getSql();
         let userId = "";
         if (token) {
-          const shares = await sql<{ user_id: string; node_id: string }>`
-            select user_id, node_id from potion_shares where token = ${token} limit 1`;
-          const share = shares[0];
+          const share = await resolveShare(token, id);
           if (!share) return new Response("Gone", { status: 404 });
-          const rows = await sql<{ id: string; parent_id: string | null }>`
-            select id, parent_id from potion_nodes where id = ${id} and deleted_at is null limit 1`;
-          const row = rows[0];
-          if (!row || (row.id !== share.node_id && row.parent_id !== share.node_id)) {
-            return new Response("Gone", { status: 404 });
-          }
-          userId = share.user_id;
+          userId = share.userId;
+        } else if (ticket) {
+          const fromTicket = userForTicket(ticket);
+          if (!fromTicket) return new Response("Unauthorized", { status: 401 });
+          userId = fromTicket;
+          const owned = await sql<{ id: string }>`
+            select id from potion_nodes where id = ${id} and user_id = ${userId} and deleted_at is null limit 1`;
+          if (!owned[0]) return new Response("Gone", { status: 404 });
         } else {
           userId = await requireUserId(url.searchParams.get("bearer") || undefined);
           const owned = await sql<{ id: string }>`

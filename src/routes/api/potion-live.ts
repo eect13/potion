@@ -39,7 +39,7 @@ export const Route = createFileRoute("/api/potion-live")({
                   /* keep the stream */
                 }
               })();
-            }, 1000);
+            }, 5000);
             const ping = setInterval(() => {
               if (closed) return;
               try {

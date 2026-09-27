@@ -39,6 +39,9 @@ export function assertSameSiteRequest(): void {
   // Non-browser client (no header), the app's own origin, or a direct
   // (address-bar/bookmark) load are all fine.
   if (!site || site === "same-origin" || site === "none") return;
+  // A bearer is not an ambient cookie. Scripted cross-site calls cannot attach
+  // it without a CORS preflight, so the desktop app may call its own server.
+  if (h.get("authorization")) return;
   // A top-level GET navigation (e.g. the broker's OAuth callback redirect) is
   // fine even when it's cross-site; scripted requests never set navigate mode.
   const dest = h.get("sec-fetch-dest");

@@ -5,9 +5,13 @@ const ops: Record<string, (data: unknown) => Promise<unknown>> = {
   ensureCloud: () => cloud.ensureCloud(),
   listCloud: (data) => cloud.listCloud({ data: data as string | null }),
   listAllCloud: () => cloud.listAllCloud(),
+  driveRootCloud: () => cloud.driveRootCloud(),
   pathCloud: (data) => cloud.pathCloud({ data: data as string | null }),
   mkdirCloud: (data) => cloud.mkdirCloud({ data: data as { parentId: string | null; name: string } }),
-  putCloud: (data) => cloud.putCloud({ data: data as { parentId: string | null; name: string; mime: string; size: number; hash: string } }),
+  putCloud: (data) =>
+    cloud.putCloud({
+      data: data as { parentId: string | null; name: string; mime: string; size: number; hash: string; existingId?: string | null },
+    }),
   commitCloud: (data) => cloud.commitCloud({ data: data as { id: string; version: number; hash: string; size: number; mime: string } }),
   trashCloud: (data) => cloud.trashCloud({ data: data as string }),
   getCloud: (data) => cloud.getCloud({ data: data as string }),
@@ -15,6 +19,8 @@ const ops: Record<string, (data: unknown) => Promise<unknown>> = {
   moveCloud: (data) => cloud.moveCloud({ data: data as { id: string; destParentId: string | null } }),
   syncCloud: (data) => cloud.syncCloud({ data: data as { id: string; synced: boolean } }),
   shareCloud: (data) => cloud.shareCloud({ data: data as string }),
+  revokeShareCloud: (data) => cloud.revokeShareCloud({ data: data as string }),
+  expireShareCloud: (data) => cloud.expireShareCloud({ data: data as { token: string; hours: number } }),
   getSharedCloud: (data) => cloud.getSharedCloud({ data: data as string }),
   getSharedFileCloud: (data) => cloud.getSharedFileCloud({ data: data as { token: string; id: string } }),
   getSharedBlobChunk: (data) =>
@@ -27,17 +33,26 @@ const ops: Record<string, (data: unknown) => Promise<unknown>> = {
   restoreCloud: (data) => cloud.restoreCloud({ data: data as string }),
   purgeCloud: (data) => cloud.purgeCloud({ data: data as string }),
   emptyTrashCloud: () => cloud.emptyTrashCloud(),
-  putBlobChunk: (data) => cloud.putBlobChunk({ data: data as { id: string; version: number; offset: number; data: string } }),
+  putBlobChunk: (data) =>
+    cloud.putBlobChunk({ data: data as { id: string; version: number; offset: number; data: string; digest: string } }),
   getBlobChunk: (data) => cloud.getBlobChunk({ data: data as { id: string; version: number; offset: number; length: number } }),
   statBlob: (data) => cloud.statBlob({ data: data as { id: string; version: number } }),
+  seedBlob: (data) => cloud.seedBlob({ data: data as { id: string; version: number; leaves: string[]; size: number } }),
+  probeBlob: (data) =>
+    cloud.probeBlob({ data: data as { id: string; version: number; depth: number; nodes: { index: number; hash: string }[] } }),
+  copyCleanBlob: (data) =>
+    cloud.copyCleanBlob({ data: data as { id: string; version: number; size: number; dirty: number[] } }),
   listVersionsCloud: (data) => cloud.listVersionsCloud({ data: data as string }),
   revertCloud: (data) => cloud.revertCloud({ data: data as { id: string; version: number } }),
   listCommentsCloud: (data) => cloud.listCommentsCloud({ data: data as string }),
   addCommentCloud: (data) => cloud.addCommentCloud({ data: data as { id: string; body: string; author?: string | null } }),
   listSharedComments: (data) => cloud.listSharedComments({ data: data as string }),
   addSharedComment: (data) => cloud.addSharedComment({ data: data as { token: string; body: string; author?: string } }),
+  listSharedChildren: (data) => cloud.listSharedChildren({ data: data as { token: string; id: string } }),
+  mediaTicketCloud: () => cloud.mediaTicketCloud(),
   listBasesCloud: () => cloud.listBasesCloud(),
   setBaseCloud: (data) => cloud.setBaseCloud({ data: data as { path: string; hash: string | null; conflict: string | null } }),
+  forgetBaseCloud: (data) => cloud.forgetBaseCloud({ data: data as string }),
   beginStashCloud: (data) => cloud.beginStashCloud({ data: data as string }),
   commitStashCloud: (data) =>
     cloud.commitStashCloud({ data: data as { id: string; version: number; hash: string; size: number; mime: string } }),

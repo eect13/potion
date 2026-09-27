@@ -2,6 +2,18 @@ import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 
+const sweptAt = new Map<string, number>();
+const commentHits = new Map<string, number[]>();
+
+function allowComment(key: string, limit = 8) {
+  const now = Date.now();
+  const prev = (commentHits.get(key) ?? []).filter((t) => now - t < 60_000);
+  if (prev.length >= limit) return false;
+  prev.push(now);
+  commentHits.set(key, prev);
+  return true;
+}
+
 export type CloudNode = {
   id: string;
   parentId: string | null;
@@ -92,10 +104,72 @@ function mapNode(r: NodeRow): CloudNode {
   };
 }
 
+async function sweepStale(sql: SqlClient, userId: string) {
+  const prev = sweptAt.get(userId) ?? 0;
+  if (Date.now() - prev < 60 * 60 * 1000) return;
+  sweptAt.set(userId, Date.now());
+  const stale = await sql<{ id: string }>`
+    select id from potion_nodes
+    where user_id = ${userId} and kind = 'file' and version = 0
+      and updated_at < now() - interval '1 day'`;
+  if (stale.length) {
+    const { deleteBlobs } = await import("@/lib/potion-blob-server");
+    const ids = stale.map((r) => r.id);
+    for (const id of ids) await deleteBlobs(userId, id);
+    await sql.query(`delete from potion_comments where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+    await sql.query(`delete from potion_versions where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+    await sql.query(`delete from potion_shares where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+    await sql.query(`delete from potion_nodes where user_id = $1 and id = any($2::text[])`, [userId, ids]);
+  }
+  const committed = await sql<{ id: string; version: number }>`
+    select id, version from potion_nodes
+    where user_id = ${userId} and kind = 'file' and version > 0`;
+  const { sweepAhead } = await import("@/lib/potion-blob-server");
+  await sweepAhead(
+    userId,
+    committed.map((r) => ({ id: r.id, version: Number(r.version) || 0 })),
+  );
+}
+
+async function underShare(sql: SqlClient, rootId: string, nodeId: string) {
+  let cur: string | null = nodeId;
+  const guard = new Set<string>();
+  while (cur && !guard.has(cur)) {
+    if (cur === rootId) return true;
+    guard.add(cur);
+    const rows: { parent_id: string | null }[] = await sql<{ parent_id: string | null }>`
+      select parent_id from potion_nodes where id = ${cur} and deleted_at is null limit 1`;
+    if (!rows[0]) return false;
+    cur = rows[0].parent_id;
+  }
+  return false;
+}
+
+function shareOpen(expires: string | Date | null | undefined) {
+  if (!expires) return true;
+  const t = expires instanceof Date ? expires.getTime() : Date.parse(String(expires));
+  return !Number.isFinite(t) || t > Date.now();
+}
+
+export async function resolveShare(token: string, nodeId: string) {
+  const sql = await getSql();
+  const shares = await sql<{ user_id: string; node_id: string; expires_at: string | Date | null }>`
+    select user_id, node_id, expires_at from potion_shares where token = ${token} limit 1`;
+  const share = shares[0];
+  if (!share || !shareOpen(share.expires_at)) return null;
+  const owned = await sql<{ id: string }>`
+    select id from potion_nodes
+    where id = ${nodeId} and user_id = ${share.user_id} and deleted_at is null limit 1`;
+  if (!owned[0]) return null;
+  if (!(await underShare(sql, share.node_id, nodeId))) return null;
+  return { userId: share.user_id, rootId: share.node_id };
+}
+
 export const ensureCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
+    await sweepStale(sql, context.userId);
     const apps = await sql<{ id: string }>`
       select id from potion_nodes
       where user_id = ${context.userId} and parent_id is null and name = 'Apps'
@@ -153,6 +227,69 @@ export const listAllCloud = createServerFn({ method: "GET" })
     return rows.map(mapNode);
   });
 
+export const driveRootCloud = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const sql = await getSql();
+    const rows = await sql<{
+      id: string;
+      parent_id: string | null;
+      name: string;
+      kind: string;
+      hash: string | null;
+      synced: boolean | null;
+    }>`
+      select id, parent_id, name, kind, hash, synced from potion_nodes
+      where user_id = ${context.userId} and deleted_at is null
+        and (kind = 'folder' or version > 0)`;
+    const { entryRoot } = await import("@/lib/potion-pair");
+    const byParent = new Map<string | null, typeof rows>();
+    for (const r of rows) {
+      const list = byParent.get(r.parent_id) ?? [];
+      list.push(r);
+      byParent.set(r.parent_id, list);
+    }
+    const entries: {
+      node: {
+        id: string;
+        parentId: string | null;
+        name: string;
+        kind: "file" | "folder";
+        mime: null;
+        size: number;
+        hash: string | null;
+        updatedAt: number;
+        peerId: null;
+      };
+      path: string;
+      parentPath: string;
+    }[] = [];
+    const walk = (pid: string | null) => {
+      for (const r of byParent.get(pid) ?? []) {
+        if (r.synced === false) continue;
+        const kind = r.kind === "folder" ? "folder" : "file";
+        entries.push({
+          node: {
+            id: r.id,
+            parentId: r.parent_id,
+            name: r.name,
+            kind,
+            mime: null,
+            size: 0,
+            hash: r.hash,
+            updatedAt: 0,
+            peerId: null,
+          },
+          path: r.name,
+          parentPath: "",
+        });
+        if (kind === "folder") walk(r.id);
+      }
+    };
+    walk(null);
+    return { root: await entryRoot(entries) };
+  });
+
 export const pathCloud = createServerFn({ method: "GET" })
   .validator((id: string | null) => id)
   .middleware([authMiddleware])
@@ -192,12 +329,23 @@ export const mkdirCloud = createServerFn({ method: "POST" })
   });
 
 export const putCloud = createServerFn({ method: "POST" })
-  .validator((d: { parentId: string | null; name: string; mime: string; size: number; hash: string }) => d)
+  .validator((d: { parentId: string | null; name: string; mime: string; size: number; hash: string; existingId?: string | null }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const { assertDisk } = await import("@/lib/potion-blob-server");
     await assertDisk(data.size);
     const sql = await getSql();
+    if (data.existingId) {
+      const held = await sql<{ id: string; version: number }>`
+        select id, version from potion_nodes
+        where id = ${data.existingId} and user_id = ${context.userId} and kind = 'file' and deleted_at is null
+        limit 1`;
+      if (held[0]) {
+        const current = Number(held[0].version) || 0;
+        const next = current > 0 ? current + 1 : 1;
+        return { id: held[0].id, version: next };
+      }
+    }
     const existing = data.parentId
       ? await sql<{ id: string; version: number }>`
           select id, version from potion_nodes
@@ -229,11 +377,17 @@ export const commitCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    const { blobSize, pruneBlobs } = await import("@/lib/potion-blob-server");
+    const { blobSize, pruneBlobs, digestFile, removeVersion, blobFilePath, saveLeaves } = await import("@/lib/potion-blob-server");
     const onDisk = await blobSize(context.userId, data.id, data.version);
     if (data.size > 0 && onDisk !== data.size) {
       throw new Error("Upload incomplete");
     }
+    const dig = await digestFile(data.size > 0 ? blobFilePath(context.userId, data.id, data.version) : "");
+    if (dig.root !== data.hash) {
+      if (data.size > 0) await removeVersion(context.userId, data.id, data.version);
+      throw new Error("Upload did not match");
+    }
+    await saveLeaves(context.userId, data.id, data.version, dig.leaves);
     await sql`
       update potion_nodes
       set mime = ${data.mime}, size = ${data.size}, hash = ${data.hash},
@@ -377,9 +531,13 @@ export const syncCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    await sql`
-      update potion_nodes set synced = ${data.synced}, updated_at = now()
-      where id = ${data.id} and user_id = ${context.userId}`;
+    const ids = await subtreeIds(sql, context.userId, data.id);
+    if (ids.length) {
+      await sql.query(
+        `update potion_nodes set synced = $3, updated_at = now() where user_id = $1 and id = any($2::text[])`,
+        [context.userId, ids, data.synced],
+      );
+    }
     return { ok: true as const };
   });
 
@@ -395,14 +553,35 @@ export const shareCloud = createServerFn({ method: "POST" })
     return { token };
   });
 
+export const revokeShareCloud = createServerFn({ method: "POST" })
+  .validator((token: string) => token)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: token }) => {
+    const sql = await getSql();
+    await sql`delete from potion_shares where token = ${token} and user_id = ${context.userId}`;
+    return { ok: true as const };
+  });
+
+export const expireShareCloud = createServerFn({ method: "POST" })
+  .validator((d: { token: string; hours: number }) => ({ token: d.token, hours: Math.min(24 * 365, Math.max(1, Math.round(d.hours))) }))
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const until = new Date(Date.now() + data.hours * 3600 * 1000).toISOString();
+    await sql`
+      update potion_shares set expires_at = ${until}
+      where token = ${data.token} and user_id = ${context.userId}`;
+    return { ok: true as const };
+  });
+
 export const getSharedCloud = createServerFn({ method: "GET" })
   .validator((token: string) => token)
   .handler(async ({ data: token }) => {
     const sql = await getSql();
-    const shares = await sql<{ node_id: string }>`
-      select node_id from potion_shares where token = ${token} limit 1`;
+    const shares = await sql<{ node_id: string; expires_at: string | Date | null }>`
+      select node_id, expires_at from potion_shares where token = ${token} limit 1`;
     const share = shares[0];
-    if (!share) return null;
+    if (!share || !shareOpen(share.expires_at)) return null;
     const rows = await sql<NodeRow>`
       select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
       from potion_nodes where id = ${share.node_id} and deleted_at is null limit 1`;
@@ -424,25 +603,20 @@ export const getSharedCloud = createServerFn({ method: "GET" })
 export const getSharedFileCloud = createServerFn({ method: "GET" })
   .validator((d: { token: string; id: string }) => d)
   .handler(async ({ data }) => {
+    const hit = await resolveShare(data.token, data.id);
+    if (!hit) return null;
     const sql = await getSql();
-    const shares = await sql<{ node_id: string }>`
-      select node_id from potion_shares where token = ${data.token} limit 1`;
-    const share = shares[0];
-    if (!share) return null;
     const rows = await sql<{
-      id: string;
-      parent_id: string | null;
       name: string;
-      kind: string;
       mime: string | null;
       size: number;
       version: number;
+      kind: string;
     }>`
-      select id, parent_id, name, kind, mime, size, version
-      from potion_nodes where id = ${data.id} and deleted_at is null and kind = 'file' limit 1`;
+      select name, mime, size, version, kind
+      from potion_nodes where id = ${data.id} and user_id = ${hit.userId} and deleted_at is null and kind = 'file' limit 1`;
     const row = rows[0];
     if (!row) return null;
-    if (row.id !== share.node_id && row.parent_id !== share.node_id) return null;
     return {
       name: row.name,
       mime: row.mime,
@@ -514,16 +688,19 @@ export const searchCloud = createServerFn({ method: "GET" })
   .validator((q: string) => q)
   .middleware([authMiddleware])
   .handler(async ({ context, data: q }) => {
-    const needle = q.trim().toLowerCase();
+    const needle = q.trim().toLowerCase().replace(/[%_\\]/g, "");
     if (!needle) return [] as CloudNode[];
+    const like = `%${needle}%`;
     const sql = await getSql();
     const rows = await sql<NodeRow>`
       select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
       from potion_nodes
       where user_id = ${context.userId} and deleted_at is null
         and (kind = 'folder' or version > 0)
-      order by updated_at desc`;
-    return rows.map(mapNode).filter((n) => n.name.toLowerCase().includes(needle)).slice(0, 80);
+        and lower(name) like ${like}
+      order by updated_at desc
+      limit 80`;
+    return rows.map(mapNode);
   });
 
 export const usedBytesCloud = createServerFn({ method: "GET" })
@@ -531,8 +708,15 @@ export const usedBytesCloud = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await getSql();
     const rows = await sql<{ bytes: string | number | null }>`
-      select coalesce(sum(size), 0) as bytes from potion_nodes
-      where user_id = ${context.userId} and kind = 'file' and deleted_at is null and version > 0`;
+      select
+        coalesce((select sum(size) from potion_versions where user_id = ${context.userId}), 0)
+        + coalesce((
+            select sum(n.size) from potion_nodes n
+            where n.user_id = ${context.userId} and n.kind = 'file' and n.deleted_at is null and n.version > 0
+              and not exists (
+                select 1 from potion_versions v where v.user_id = n.user_id and v.node_id = n.id
+              )
+          ), 0) as bytes`;
     return { bytes: Number(rows[0]?.bytes) || 0 };
   });
 
@@ -563,8 +747,8 @@ export const restoreCloud = createServerFn({ method: "POST" })
     if (ids.length) {
       await sql.query(
         `update potion_nodes set deleted_at = null, updated_at = now()
-         where user_id = $1 and deleted_at is not null and id = any($2::text[])`,
-        [context.userId, ids],
+         where user_id = $1 and deleted_at = $2 and id = any($3::text[])`,
+        [context.userId, stamp, ids],
       );
     }
     return { ok: true as const };
@@ -575,6 +759,7 @@ async function wipeNodes(sql: SqlClient, userId: string, ids: string[]) {
   const { deleteBlobs } = await import("@/lib/potion-blob-server");
   await sql.query(`delete from potion_comments where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
   await sql.query(`delete from potion_versions where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
+  await sql.query(`delete from potion_shares where user_id = $1 and node_id = any($2::text[])`, [userId, ids]);
   await sql.query(`delete from potion_nodes where user_id = $1 and id = any($2::text[])`, [userId, ids]);
   for (const id of ids) await deleteBlobs(userId, id);
 }
@@ -600,11 +785,14 @@ export const emptyTrashCloud = createServerFn({ method: "POST" })
   });
 
 export const putBlobChunk = createServerFn({ method: "POST" })
-  .validator((d: { id: string; version: number; offset: number; data: string }) => d)
+  .validator((d: { id: string; version: number; offset: number; data: string; digest: string }) => d)
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const { writeChunk } = await import("@/lib/potion-blob-server");
+    const { sha256 } = await import("@/lib/potion-merkle");
     const bytes = Buffer.from(data.data, "base64");
+    const digest = await sha256(new Uint8Array(bytes));
+    if (!data.digest || digest !== data.digest) throw new Error("Slice did not match");
     const wrote = await writeChunk(context.userId, data.id, data.version, data.offset, bytes);
     return { wrote };
   });
@@ -614,8 +802,10 @@ export const getBlobChunk = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const { readChunk } = await import("@/lib/potion-blob-server");
+    const { sha256 } = await import("@/lib/potion-merkle");
     const buf = await readChunk(context.userId, data.id, data.version, data.offset, data.length);
-    return { data: buf.toString("base64"), read: buf.byteLength };
+    const digest = buf.byteLength ? await sha256(new Uint8Array(buf)) : "";
+    return { data: buf.toString("base64"), read: buf.byteLength, digest };
   });
 
 export const statBlob = createServerFn({ method: "GET" })
@@ -626,23 +816,73 @@ export const statBlob = createServerFn({ method: "GET" })
     return { size: await blobSize(context.userId, data.id, data.version) };
   });
 
+export const seedBlob = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; leaves: string[]; size: number }) => d)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql<{ id: string }>`
+      select id from potion_nodes where id = ${data.id} and user_id = ${context.userId} limit 1`;
+    if (!rows[0]) throw new Error("Missing");
+    const { seedLeaves } = await import("@/lib/potion-blob-server");
+    const missing = await seedLeaves(context.userId, data.id, data.version, data.leaves, data.size);
+    return { missing };
+  });
+
+export const probeBlob = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; depth: number; nodes: { index: number; hash: string }[] }) => ({
+    id: d.id,
+    version: d.version,
+    depth: d.depth,
+    nodes: Array.isArray(d.nodes) ? d.nodes.slice(0, 8192) : [],
+  }))
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql<{ id: string }>`
+      select id from potion_nodes where id = ${data.id} and user_id = ${context.userId} limit 1`;
+    if (!rows[0]) return { known: false, width: 0, same: [] as boolean[] };
+    const { ensureLeaves } = await import("@/lib/potion-blob-server");
+    const { treeLevels } = await import("@/lib/potion-merkle");
+    const leaves = await ensureLeaves(context.userId, data.id, data.version);
+    if (!leaves) return { known: false, width: 0, same: [] as boolean[] };
+    const levels = await treeLevels(leaves);
+    const level = levels[data.depth] ?? [];
+    return {
+      known: true,
+      width: level.length,
+      same: data.nodes.map((n) => n.index >= 0 && n.index < level.length && level[n.index] === n.hash),
+    };
+  });
+
+export const copyCleanBlob = createServerFn({ method: "POST" })
+  .validator((d: { id: string; version: number; size: number; dirty: number[] }) => ({
+    id: d.id,
+    version: d.version,
+    size: d.size,
+    dirty: Array.isArray(d.dirty) ? d.dirty.slice(0, 100000) : [],
+  }))
+  .middleware([authMiddleware])
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql<{ id: string }>`
+      select id from potion_nodes where id = ${data.id} and user_id = ${context.userId} limit 1`;
+    if (!rows[0]) throw new Error("Missing");
+    const { copyCleanLeaves } = await import("@/lib/potion-blob-server");
+    const copied = await copyCleanLeaves(context.userId, data.id, data.version, data.size, data.dirty);
+    return { copied };
+  });
+
 export const getSharedBlobChunk = createServerFn({ method: "GET" })
   .validator((d: { token: string; id: string; version: number; offset: number; length: number }) => d)
   .handler(async ({ data }) => {
-    const sql = await getSql();
-    const shares = await sql<{ user_id: string; node_id: string }>`
-      select user_id, node_id from potion_shares where token = ${data.token} limit 1`;
-    const share = shares[0];
-    if (!share) return { data: "", read: 0 };
-    const rows = await sql<{ id: string; parent_id: string | null; kind: string }>`
-      select id, parent_id, kind from potion_nodes
-      where id = ${data.id} and deleted_at is null limit 1`;
-    const row = rows[0];
-    if (!row || row.kind !== "file") return { data: "", read: 0 };
-    if (row.id !== share.node_id && row.parent_id !== share.node_id) return { data: "", read: 0 };
+    const hit = await resolveShare(data.token, data.id);
+    if (!hit) return { data: "", read: 0, digest: "" };
     const { readChunk } = await import("@/lib/potion-blob-server");
-    const buf = await readChunk(share.user_id, data.id, data.version, data.offset, data.length);
-    return { data: buf.toString("base64"), read: buf.byteLength };
+    const { sha256 } = await import("@/lib/potion-merkle");
+    const buf = await readChunk(hit.userId, data.id, data.version, data.offset, data.length);
+    const digest = buf.byteLength ? await sha256(new Uint8Array(buf)) : "";
+    return { data: buf.toString("base64"), read: buf.byteLength, digest };
   });
 
 export const listVersionsCloud = createServerFn({ method: "GET" })
@@ -719,7 +959,12 @@ export const addCommentCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     if (!data.body) throw new Error("Empty comment");
+    if (!allowComment(context.userId, 30)) throw new Error("Slow down");
     const sql = await getSql();
+    const owned = await sql<{ id: string }>`
+      select id from potion_nodes
+      where id = ${data.id} and user_id = ${context.userId} and deleted_at is null limit 1`;
+    if (!owned[0]) throw new Error("Missing");
     const id = nid();
     await sql`
       insert into potion_comments (id, user_id, node_id, body, author)
@@ -758,6 +1003,7 @@ export const addSharedComment = createServerFn({ method: "POST" })
   }))
   .handler(async ({ data }) => {
     if (!data.body) throw new Error("Empty comment");
+    if (!allowComment(`share:${data.token}`)) throw new Error("Slow down");
     const sql = await getSql();
     const shares = await sql<{ user_id: string; node_id: string }>`
       select user_id, node_id from potion_shares where token = ${data.token} limit 1`;
@@ -793,6 +1039,15 @@ export const setBaseCloud = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
+export const forgetBaseCloud = createServerFn({ method: "POST" })
+  .validator((path: string) => path)
+  .middleware([authMiddleware])
+  .handler(async ({ context, data: path }) => {
+    const sql = await getSql();
+    await sql`delete from potion_sync_base where user_id = ${context.userId} and path = ${path}`;
+    return { ok: true as const };
+  });
+
 export const beginStashCloud = createServerFn({ method: "POST" })
   .validator((id: string) => id)
   .middleware([authMiddleware])
@@ -812,14 +1067,42 @@ export const commitStashCloud = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context, data }) => {
     const sql = await getSql();
-    const { blobSize } = await import("@/lib/potion-blob-server");
+    const { blobSize, digestFile, blobFilePath, removeVersion, saveLeaves } = await import("@/lib/potion-blob-server");
     const onDisk = await blobSize(context.userId, data.id, data.version);
     if (data.size > 0 && onDisk !== data.size) throw new Error("Upload incomplete");
+    const dig = await digestFile(data.size > 0 ? blobFilePath(context.userId, data.id, data.version) : "");
+    if (dig.root !== data.hash) {
+      if (data.size > 0) await removeVersion(context.userId, data.id, data.version);
+      throw new Error("Upload did not match");
+    }
+    await saveLeaves(context.userId, data.id, data.version, dig.leaves);
     await sql`
       insert into potion_versions (id, user_id, node_id, version, size, hash, mime)
       values (${nid()}, ${context.userId}, ${data.id}, ${data.version}, ${data.size}, ${data.hash}, ${data.mime})`;
     const { emitLive } = await import("@/lib/potion-live.server");
     emitLive(context.userId);
     return { version: data.version };
+  });
+
+export const listSharedChildren = createServerFn({ method: "GET" })
+  .validator((d: { token: string; id: string }) => d)
+  .handler(async ({ data }) => {
+    const hit = await resolveShare(data.token, data.id);
+    if (!hit) return [] as CloudNode[];
+    const sql = await getSql();
+    const rows = await sql<NodeRow>`
+      select id, parent_id, name, kind, mime, size, version, created_at, updated_at, deleted_at, synced, hash
+      from potion_nodes
+      where user_id = ${hit.userId} and parent_id = ${data.id} and deleted_at is null
+        and (kind = 'folder' or version > 0)
+      order by kind desc, name asc`;
+    return rows.map(mapNode);
+  });
+
+export const mediaTicketCloud = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const { issueTicket } = await import("@/lib/potion-ticket.server");
+    return { ticket: issueTicket(context.userId) };
   });
 

@@ -1,0 +1,41 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Potion",
+      "hasCanvas": false,
+      "bodyTextLen": 109,
+      "bodyTextHash": "f9a87fef019fdfa5271f21b2503c05256c102fa1dcd00d38e1d529f893801c34",
+      "bodyTextPrefix": "P Potion Your folder, on every device. Continue with Google Cont",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Potion",
+      "hasCanvas": false,
+      "bodyTextLen": 109,
+      "bodyTextHash": "f9a87fef019fdfa5271f21b2503c05256c102fa1dcd00d38e1d529f893801c34",
+      "bodyTextPrefix": "P Potion Your folder, on every device. Continue with Google Cont",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview-built.json",
+  "divergesFromBaseline": true,
+  "baselineReasons": [
+    "desktop: body text changed (6 -> 109 chars, hash mismatch)",
+    "mobile: body text changed (6 -> 109 chars, hash mismatch)"
+  ]
+}

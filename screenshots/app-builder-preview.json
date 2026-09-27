@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Potion",
+      "hasCanvas": false,
+      "bodyTextLen": 91,
+      "bodyTextHash": "e26bcf831c8d7a11833544083c71af40cd1b6c1877de207a4545d90c8ef9df6e",
+      "bodyTextPrefix": "Potion v1.2.0 Folder Apps Sync Light Collapse Sign in Potion Lis",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Potion",
+      "hasCanvas": false,
+      "bodyTextLen": 100,
+      "bodyTextHash": "692c9a5010623819e3d092548ca887fc52c74b98cd3eef1fb73962236965a33f",
+      "bodyTextPrefix": "Potion v1.2.0 Light mode Sign in Potion List Grid New folder Add",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
