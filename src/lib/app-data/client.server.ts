@@ -278,7 +278,9 @@ function tokenIdentityKey(token: string): string {
             .digest("base64url");
         }
       }
-    } catch {}
+    } catch {
+      // Not a decodable JWT payload: fall through and key on the whole token.
+    }
   }
   return createHash("sha256").update(token).digest("base64url");
 }

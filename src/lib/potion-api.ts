@@ -297,7 +297,7 @@ async function putCloudBlob(
   if (local) await saveLeafList(local.id, local.version, leaves).catch(() => undefined);
   const hash = await merkleRoot(leaves, blob.size);
   const pending = jobFor(parentId, name);
-  let started =
+  const started =
     pending?.cloudId && pending.version && pending.hash === hash && pending.size === blob.size
       ? { id: pending.cloudId, version: pending.version }
       : await cloud.putCloud({ data: { parentId, name, mime, size: blob.size, hash, existingId: existingId ?? null } });
