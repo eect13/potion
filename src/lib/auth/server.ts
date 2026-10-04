@@ -40,6 +40,7 @@ import { emailAndPasswordEnabled } from "./email-password";
 import { GATE_PROVIDER_ID, gateIdentitySessions } from "./gate-session.server";
 import { GROK_PROVIDERS } from "./providers";
 import { pgliteDialect } from "./pglite-dialect";
+import { assertAuthSecret, guardAuthUse } from "./secret";
 import {
   GROK_ISSUER_DEFAULT,
   PREVIEW_ALLOWED_HOSTS,
@@ -172,10 +173,12 @@ const grokOAuthPlugin = authConfigured
     })
   : null;
 
-export const auth = betterAuth({
+const betterAuthInstance = betterAuth({
   baseURL,
   // Deployed apps inject BETTER_AUTH_SECRET. Preview: process-stable secret on
   // globalThis so HMR doesn't invalidate PGLite-backed sessions (see above).
+  // With auth on, a deployed production runtime without it fails on first use,
+  // not here (see `./secret` and the guard below).
   secret: env("BETTER_AUTH_SECRET") ?? previewAuthSecret(),
   database,
 
@@ -251,6 +254,11 @@ export const auth = betterAuth({
     tanstackStartCookies(),
   ],
 });
+
+// Lazy production guard: importing this module, booting, or running with auth
+// off never throws. With auth on, the first sign-in or session read on a
+// deployed production runtime without BETTER_AUTH_SECRET throws a clear error.
+export const auth = guardAuthUse(betterAuthInstance, () => assertAuthSecret());
 
 export function readSessionToken(): string | null {
   return getCookie(SESSION_TOKEN_COOKIE) ?? null;
