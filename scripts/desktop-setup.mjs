@@ -184,6 +184,11 @@ function findWixBin() {
   if (which("candle")) return "PATH";
   const x86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const pf = process.env.ProgramFiles || "C:\\Program Files";
+  // Tauri downloads its own WiX v3 into %LOCALAPPDATA%\tauri\WixTools* and uses it directly.
+  const local = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
+  for (const name of ["WixTools314", "WixTools"]) {
+    if (existsSync(join(local, "tauri", name, "candle.exe"))) return "TAURI_CACHE";
+  }
   const versions = ["v3.14", "v3.11", "v3.10"];
   for (const v of versions) {
     for (const base of [x86, pf]) {
@@ -197,6 +202,10 @@ function findWixBin() {
 function hasWix() {
   const bin = findWixBin();
   if (!bin) return false;
+  if (bin === "TAURI_CACHE") {
+    console.log("  WiX found in the Tauri tool cache — MSI will build.");
+    return true;
+  }
   if (bin !== "PATH") {
     process.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
     console.log(`  WiX at ${bin} — added to PATH so MSI can build.`);
