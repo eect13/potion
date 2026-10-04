@@ -575,6 +575,7 @@ export function PotionApp() {
           </header>
         ) : (
           <header className="flex flex-col gap-3 border-b border-border px-4 py-3 md:px-6">
+            <h1 className="sr-only">Potion</h1>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-1 text-sm">
                 <button type="button" className="text-muted hover:text-accent" onClick={() => { setParentId(null); setQuery(""); }}>
