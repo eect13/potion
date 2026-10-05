@@ -23,6 +23,31 @@ export function readDesktopCloudAuth(
 }
 
 /**
+ * Snapshot for `useSyncExternalStore`. Must be referentially stable while the
+ * underlying server URL + token are unchanged (React compares with Object.is;
+ * a fresh object every call → infinite re-render / error #185).
+ */
+let snapshotCache: DesktopCloudAuth | null = null;
+let snapshotKey = "";
+
+export function getDesktopAuthSnapshot(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): DesktopCloudAuth | null {
+  const next = readDesktopCloudAuth(storage);
+  const key = next ? `${next.server}\n${next.token}` : "";
+  if (key === snapshotKey) return snapshotCache;
+  snapshotKey = key;
+  snapshotCache = next;
+  return snapshotCache;
+}
+
+/** Test helper: clear the snapshot cache between cases. */
+export function resetDesktopAuthSnapshotCache(): void {
+  snapshotCache = null;
+  snapshotKey = "";
+}
+
+/**
  * Prefer a real Better Auth session user; else treat desktop token+server as
  * signed in so Sync/Folder flip to cloud after desktopSignIn.
  */

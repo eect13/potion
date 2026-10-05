@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { authClient, authEnabled } from "./client";
 import {
   DESKTOP_AUTH_CHANGED,
-  readDesktopCloudAuth,
+  getDesktopAuthSnapshot,
   resolveSignedInUser,
 } from "./desktop-session";
 
@@ -49,9 +49,9 @@ function subscribeDesktopAuth(onStoreChange: () => void): () => void {
   };
 }
 
-function getDesktopAuthSnapshot() {
+function getClientDesktopAuthSnapshot() {
   if (typeof window === "undefined") return null;
-  return readDesktopCloudAuth(window.localStorage);
+  return getDesktopAuthSnapshot(window.localStorage);
 }
 
 /**
@@ -63,7 +63,8 @@ function getDesktopAuthSnapshot() {
  *                            (cookie when deployed; bearer in live preview).
  *   - Desktop path 1: after `desktopSignIn`, localStorage holds the server URL
  *                            and bearer; that counts as signed in so Sync/Folder
- *                            flip to cloud (claim #7).
+ *                            flip to cloud (claim #7). Snapshot is referentially
+ *                            stable (Card 72) so useSyncExternalStore does not loop.
  *   - Auth disabled (`VITE_AUTH_ENABLED=false`) -> `DEV_USER`, never pending.
  *
  * Protect a route by waiting out `isPending` before acting on `user` —
@@ -84,7 +85,7 @@ export function useCurrentUserState(): CurrentUserState {
   // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
   const desktopAuth = useSyncExternalStore(
     subscribeDesktopAuth,
-    getDesktopAuthSnapshot,
+    getClientDesktopAuthSnapshot,
     () => null,
   );
   const user = resolveSignedInUser({

@@ -1,10 +1,12 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   DESKTOP_SERVER_KEY,
   DESKTOP_TOKEN_KEY,
+  getDesktopAuthSnapshot,
   readBearerToken,
   readDesktopCloudAuth,
+  resetDesktopAuthSnapshotCache,
   resolveSignedInUser,
 } from "./desktop-session.ts";
 
@@ -20,6 +22,10 @@ function mem(init: Record<string, string> = {}) {
     },
   };
 }
+
+beforeEach(() => {
+  resetDesktopAuthSnapshotCache();
+});
 
 describe("desktop signed-in check (#7)", () => {
   it("stays signed out when only the token or only the server is set (fail at base shape)", () => {
@@ -93,5 +99,38 @@ describe("desktop signed-in check (#7)", () => {
       sessionKey: "grok-auth.bearer-token",
     });
     assert.equal(token, "desk-tok");
+  });
+});
+
+describe("getDesktopAuthSnapshot stability (Card 72 / React #185)", () => {
+  it("returns the same object reference while server+token are unchanged", () => {
+    const storage = mem({
+      [DESKTOP_SERVER_KEY]: "https://srv.example",
+      [DESKTOP_TOKEN_KEY]: "tok",
+    });
+    const a = getDesktopAuthSnapshot(storage);
+    const b = getDesktopAuthSnapshot(storage);
+    assert.ok(a);
+    assert.equal(a, b); // Object.is — required by useSyncExternalStore
+  });
+
+  it("returns a new object only when the underlying values change", () => {
+    const storage = mem({
+      [DESKTOP_SERVER_KEY]: "https://srv.example",
+      [DESKTOP_TOKEN_KEY]: "tok",
+    });
+    const a = getDesktopAuthSnapshot(storage);
+    storage.setItem(DESKTOP_TOKEN_KEY, "tok-2");
+    const b = getDesktopAuthSnapshot(storage);
+    assert.notEqual(a, b);
+    assert.deepEqual(b, { server: "https://srv.example", token: "tok-2" });
+    const c = getDesktopAuthSnapshot(storage);
+    assert.equal(b, c);
+  });
+
+  it("stays null-stable when signed out", () => {
+    const storage = mem();
+    assert.equal(getDesktopAuthSnapshot(storage), null);
+    assert.equal(getDesktopAuthSnapshot(storage), null);
   });
 });
