@@ -755,7 +755,7 @@ export function PotionApp() {
             type="button"
             onClick={() => setView(id)}
             className={cn(
-              "flex h-16 flex-1 flex-col items-center justify-center gap-1 text-xs text-muted",
+              "flex h-16 flex-1 flex-col items-center justify-center gap-1 text-xs font-medium leading-none text-muted",
               view === id && "text-foreground",
             )}
           >
@@ -858,7 +858,7 @@ function Brand({ collapsed }: { collapsed: boolean }) {
         <span className="sr-only">Potion</span>
       ) : (
         <div>
-          <p className="text-sm font-medium leading-tight">Potion</p>
+          <p className="text-sm font-semibold tracking-tight leading-none">Potion</p>
           <p className="text-xs text-muted">{APP_VERSION_LABEL}</p>
         </div>
       )}
@@ -916,7 +916,7 @@ function Nav({ view, setView, collapsed }: { view: View; setView: (v: View) => v
           title={label}
           onClick={() => setView(id)}
           className={cn(
-            "flex h-11 items-center gap-3 rounded-lg text-sm text-muted",
+            "flex h-11 items-center gap-3 rounded-lg text-sm font-medium leading-none text-muted",
             collapsed ? "justify-center" : "px-3 text-left",
             view === id && "bg-elevated text-foreground",
           )}
