@@ -1,7 +1,10 @@
 /** Desktop talks to a Potion server you run. No hosted file service. */
 
-const SERVER_KEY = "potion-server";
-const TOKEN_KEY = "potion-desktop-token";
+import {
+  DESKTOP_AUTH_CHANGED,
+  DESKTOP_SERVER_KEY as SERVER_KEY,
+  DESKTOP_TOKEN_KEY as TOKEN_KEY,
+} from "@/lib/auth/desktop-session";
 
 function serverBase() {
   try {
@@ -99,6 +102,10 @@ export async function desktopSignIn(email: string, password: string) {
   });
   if (!res.ok) throw new Error("Sign-in failed");
   const bearer = res.headers.get("set-auth-token");
-  if (bearer) localStorage.setItem(TOKEN_KEY, bearer);
+  if (bearer) {
+    localStorage.setItem(TOKEN_KEY, bearer);
+    // Wake useCurrentUserState so Sync/Folder flip to cloud (claim #7).
+    window.dispatchEvent(new Event(DESKTOP_AUTH_CHANGED));
+  }
   return Boolean(bearer);
 }

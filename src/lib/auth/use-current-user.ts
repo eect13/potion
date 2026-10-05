@@ -1,4 +1,10 @@
+import { useSyncExternalStore } from "react";
 import { authClient, authEnabled } from "./client";
+import {
+  DESKTOP_AUTH_CHANGED,
+  readDesktopCloudAuth,
+  resolveSignedInUser,
+} from "./desktop-session";
 
 /** Normalized user shape used across the app, auth on or off. */
 export type AppUser = {
@@ -33,6 +39,21 @@ export type CurrentUserState = {
   isPending: boolean;
 };
 
+function subscribeDesktopAuth(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(DESKTOP_AUTH_CHANGED, onStoreChange);
+  window.addEventListener("storage", onStoreChange);
+  return () => {
+    window.removeEventListener(DESKTOP_AUTH_CHANGED, onStoreChange);
+    window.removeEventListener("storage", onStoreChange);
+  };
+}
+
+function getDesktopAuthSnapshot() {
+  if (typeof window === "undefined") return null;
+  return readDesktopCloudAuth(window.localStorage);
+}
+
 /**
  * Current user + loading state. Same behavior in live preview and when deployed:
  *   - Auth enabled -> the real signed-in user; `user` is `null` while
@@ -40,6 +61,9 @@ export type CurrentUserState = {
  *                            signed out (`isPending: false`). Session comes from
  *                            Better Auth `useSession()` → `/api/auth/get-session`
  *                            (cookie when deployed; bearer in live preview).
+ *   - Desktop path 1: after `desktopSignIn`, localStorage holds the server URL
+ *                            and bearer; that counts as signed in so Sync/Folder
+ *                            flip to cloud (claim #7).
  *   - Auth disabled (`VITE_AUTH_ENABLED=false`) -> `DEV_USER`, never pending.
  *
  * Protect a route by waiting out `isPending` before acting on `user` —
@@ -56,21 +80,26 @@ export type CurrentUserState = {
  */
 export function useCurrentUserState(): CurrentUserState {
   if (!authEnabled) return { user: DEV_USER, isPending: false };
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
   const { data, isPending } = authClient.useSession();
-  const user = data?.user;
-  return {
-    user: user
-      ? {
-          id: user.id,
-          displayName: user.name ?? null,
-          primaryEmail: user.email ?? null,
-          profileImageUrl: user.image ?? null,
-          isDevFallback: false,
-        }
-      : null,
-    isPending,
-  };
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
+  const desktopAuth = useSyncExternalStore(
+    subscribeDesktopAuth,
+    getDesktopAuthSnapshot,
+    () => null,
+  );
+  const user = resolveSignedInUser({
+    sessionUser: data?.user,
+    desktopAuth,
+    fromSession: (sessionUser) => ({
+      id: sessionUser.id,
+      displayName: sessionUser.name ?? null,
+      primaryEmail: sessionUser.email ?? null,
+      profileImageUrl: sessionUser.image ?? null,
+    }),
+  });
+  // While Better Auth is still loading and we have no desktop session, stay pending.
+  const pending = Boolean(isPending && !user);
+  return { user, isPending: pending };
 }
 
 /**

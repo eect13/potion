@@ -2,6 +2,7 @@ import { genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { runPreSignInSignOut, runSignOut } from "../../../scripts/sign-out-plan.mjs";
 import { GROK_PROVIDERS } from "./providers";
+import { readBearerToken } from "./desktop-session";
 
 /**
  * Better Auth client for this React SPA (browser-side).
@@ -47,14 +48,14 @@ export { GROK_PROVIDERS };
 // preview after a popup sign-in, so the cookie path is untouched elsewhere.
 const BEARER_KEY = "grok-auth.bearer-token";
 
-/** The stored preview bearer token, or null. */
+/** Preview bearer, or the desktop path-1 token when present. */
 export function getBearerToken(): string | null {
   if (typeof window === "undefined") return null;
-  try {
-    return window.sessionStorage.getItem(BEARER_KEY);
-  } catch {
-    return null;
-  }
+  return readBearerToken({
+    sessionStorage: window.sessionStorage,
+    localStorage: window.localStorage,
+    sessionKey: BEARER_KEY,
+  });
 }
 
 function setBearerToken(token: string | null): void {
