@@ -107,7 +107,7 @@ function bmp32(size, rgba) {
       buf[o++] = rgba[i + 2];
       buf[o++] = rgba[i + 1];
       buf[o++] = rgba[i];
-      buf[o++] = 255;
+      buf[o++] = rgba[i + 3];
     }
   }
   return buf;
@@ -143,7 +143,7 @@ const maskData = `data:image/png;base64,${readFileSync(MASK_PNG).toString("base6
 function tileHtml(size, { rounded = true, padFrac = LOGO_PAD } = {}) {
   const radius = rounded ? Math.round(size * 0.25) : 0;
   const inset = `${padFrac * 100}%`;
-  return `<!doctype html><html><body style="margin:0">
+  return `<!doctype html><html style="background:transparent"><body style="margin:0;background:transparent">
 <div style="width:${size}px;height:${size}px;background:${INK};border-radius:${radius}px;position:relative;overflow:hidden">
   <div style="position:absolute;inset:${inset};background:${CREAM};-webkit-mask-image:url(${logoData});mask-image:url(${logoData});-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center"></div>
 </div></body></html>`;
@@ -170,7 +170,7 @@ const page = await browser.newPage({ deviceScaleFactor: 1 });
 async function pngAt(size, opts = {}) {
   await page.setViewportSize({ width: size, height: size });
   await page.setContent(tileHtml(size, opts), { waitUntil: "load" });
-  return Buffer.from(await page.screenshot({ type: "png", omitBackground: false }));
+  return Buffer.from(await page.screenshot({ type: "png", omitBackground: true }));
 }
 
 mkdirSync(ICONS, { recursive: true });
