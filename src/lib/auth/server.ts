@@ -47,7 +47,7 @@ import {
   PREVIEW_CLIENT_ID,
   PREVIEW_CLIENT_SECRET,
 } from "./preview";
-import { buildTrustedOrigins, LOCAL_DEV_ORIGINS } from "./trusted-origins";
+import { buildTrustedOrigins } from "./trusted-origins";
 
 // Kick (and share) PGLite bootstrap as soon as the auth server module loads.
 void ensureDbReady();
